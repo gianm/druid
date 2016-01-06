@@ -139,7 +139,7 @@ public class RealtimeIndexTask extends AbstractTask
     super(
         id == null ? makeTaskId(fireDepartment) : id,
         String.format("index_realtime_%s", makeDatasource(fireDepartment)),
-        taskResource == null ? new TaskResource(makeTaskId(fireDepartment), 1) : taskResource,
+        taskResource,
         makeDatasource(fireDepartment),
         context
     );
