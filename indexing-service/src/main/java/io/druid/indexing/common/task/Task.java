@@ -24,6 +24,7 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import io.druid.indexing.common.TaskStatus;
 import io.druid.indexing.common.TaskToolbox;
 import io.druid.indexing.common.actions.TaskActionClient;
+import io.druid.indexing.common.task.rttd.RealtimeIndexTaskTokyoDrift;
 import io.druid.query.Query;
 import io.druid.query.QueryRunner;
 
@@ -54,6 +55,7 @@ import java.util.Map;
     @JsonSubTypes.Type(name = "hadoop_convert_segment", value = HadoopConverterTask.class),
     @JsonSubTypes.Type(name = "hadoop_convert_segment_sub", value = HadoopConverterTask.ConverterSubTask.class),
     @JsonSubTypes.Type(name = "index_realtime", value = RealtimeIndexTask.class),
+    @JsonSubTypes.Type(name = "index_realtime_tokyo_drift", value = RealtimeIndexTaskTokyoDrift.class),
     @JsonSubTypes.Type(name = "noop", value = NoopTask.class),
     @JsonSubTypes.Type(name = "version_converter", value = ConvertSegmentBackwardsCompatibleTask.class), // Backwards compat - Deprecated
     @JsonSubTypes.Type(name = "version_converter_sub", value = ConvertSegmentBackwardsCompatibleTask.SubTask.class), // backwards compat - Deprecated
