@@ -278,7 +278,6 @@ public class KafkaIndexTaskTest
   }
 
   @Test(timeout = 60_000L)
-  @Ignore // TODO- see replicas todo in FiniteAppenderatorDriver
   public void testRunReplicas() throws Exception
   {
     final KafkaIndexTask task1 = createTask(
