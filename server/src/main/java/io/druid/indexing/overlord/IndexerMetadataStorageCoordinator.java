@@ -97,8 +97,7 @@ public interface IndexerMetadataStorageCoordinator
    * Attempts to insert a set of segments to the metadata storage. Returns the set of segments actually added (segments
    * with identifiers already in the metadata storage will not be added).
    * <p/>
-   * If startMetadata and endMetadata are set, this insertion will be atomic with a compare-and-swap on dataSource
-   * commit metadata.
+   * If newCommitMetadata is set, this insertion will be atomic with a compare-and-swap on dataSource commit metadata.
    *
    * @param segments      set of segments to add, must all be from the same dataSource
    * @param startMetadata dataSource metadata pre-insert must match this startMetadata according to
