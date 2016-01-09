@@ -19,9 +19,11 @@
 
 package io.druid.segment.realtime.appenderator;
 
+import com.google.common.base.Function;
 import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Supplier;
+import com.google.common.collect.FluentIterable;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
@@ -40,12 +42,14 @@ import io.druid.segment.realtime.plumber.SegmentHandoffNotifierFactory;
 import io.druid.timeline.DataSegment;
 import org.joda.time.DateTime;
 
+import javax.annotation.Nullable;
 import java.io.Closeable;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
 import java.util.Random;
+import java.util.Set;
 import java.util.TreeMap;
 
 /**
@@ -63,6 +67,7 @@ public class FiniteAppenderatorDriver implements Closeable
   private final Appenderator appenderator;
   private final SegmentAllocator segmentAllocator;
   private final SegmentHandoffNotifier handoffNotifier;
+  private final UsedSegmentChecker usedSegmentChecker;
   private final int maxRowsPerSegment;
 
   // Key = Start of segment intervals. Value = Segment we're currently adding data to.
@@ -76,6 +81,7 @@ public class FiniteAppenderatorDriver implements Closeable
       Appenderator appenderator,
       SegmentAllocator segmentAllocator,
       SegmentHandoffNotifierFactory handoffNotifierFactory,
+      UsedSegmentChecker usedSegmentChecker,
       int maxRowsPerSegment
   )
   {
@@ -83,6 +89,7 @@ public class FiniteAppenderatorDriver implements Closeable
     this.segmentAllocator = Preconditions.checkNotNull(segmentAllocator, "segmentAllocator");
     this.handoffNotifier = Preconditions.checkNotNull(handoffNotifierFactory, "handoffNotifierFactory")
                                         .createSegmentHandoffNotifier(appenderator.getDataSource());
+    this.usedSegmentChecker = Preconditions.checkNotNull(usedSegmentChecker, "usedSegmentChecker");
     this.maxRowsPerSegment = maxRowsPerSegment;
   }
 
@@ -259,21 +266,17 @@ public class FiniteAppenderatorDriver implements Closeable
     }
 
     long nTry = 0;
-    boolean trying = true;
-    while (trying) {
+    while (true) {
       try {
         log.info("Pushing segments: [%s]", Joiner.on(", ").join(theSegments));
         final SegmentsAndMetadata segmentsAndMetadata = appenderator.push(theSegments, committer).get();
 
-        if (segmentsAndMetadata.getSegments().size() != theSegments.size()) {
+        // Sanity check
+        if (!segmentsToIdentifiers(segmentsAndMetadata.getSegments()).equals(Sets.newHashSet(theSegments))) {
           throw new ISE(
-              "WTF?! Pushed fewer segments than requested. Missing segments: [%s]",
-              Joiner.on(", ").join(
-                  Sets.difference(
-                      ImmutableSet.copyOf(theSegments),
-                      ImmutableSet.copyOf(segmentsAndMetadata.getSegments())
-                  )
-              )
+              "WTF?! Pushed different segments than requested. Pushed[%s], requested[%s].",
+              Joiner.on(", ").join(identifiersToStrings(segmentsToIdentifiers(segmentsAndMetadata.getSegments()))),
+              Joiner.on(", ").join(identifiersToStrings(theSegments))
           );
         }
 
@@ -288,62 +291,63 @@ public class FiniteAppenderatorDriver implements Closeable
             segmentsAndMetadata.getCommitMetadata()
         );
 
-        if (!published) {
-          // TODO This happens on the replica that lost the publish race, but we still want it to wait for handoff...
-          log.info("Transaction failure while publishing segments, giving up.");
-          trying = false;
+        if (published) {
+          log.info("Published segments, awaiting handoff.");
         } else {
-          log.info(
-              "Published segments, awaiting handoff: [%s]",
-              segmentsAndMetadata.getCommitMetadata(),
-              Joiner.on(", ").join(segmentsAndMetadata.getSegments())
-          );
+          log.info("Transaction failure while publishing segments, checking if someone else beat us to it.");
+          if (usedSegmentChecker.findUsedSegments(segmentsToIdentifiers(segmentsAndMetadata.getSegments()))
+                                .equals(Sets.newHashSet(segmentsAndMetadata.getSegments()))) {
+            log.info("Our segments really do exist, awaiting handoff.");
+          } else {
+            log.warn("Our segments don't exist, giving up.");
+            return null;
+          }
+        }
 
-          for (final DataSegment dataSegment : segmentsAndMetadata.getSegments()) {
-            handoffNotifier.registerSegmentHandoffCallback(
-                new SegmentDescriptor(
-                    dataSegment.getInterval(),
-                    dataSegment.getVersion(),
-                    dataSegment.getShardSpec().getPartitionNum()
-                ),
-                MoreExecutors.sameThreadExecutor(),
-                new Runnable()
+        for (final DataSegment dataSegment : segmentsAndMetadata.getSegments()) {
+          handoffNotifier.registerSegmentHandoffCallback(
+              new SegmentDescriptor(
+                  dataSegment.getInterval(),
+                  dataSegment.getVersion(),
+                  dataSegment.getShardSpec().getPartitionNum()
+              ),
+              MoreExecutors.sameThreadExecutor(),
+              new Runnable()
+              {
+                @Override
+                public void run()
                 {
-                  @Override
-                  public void run()
-                  {
-                    final SegmentIdentifier identifier = SegmentIdentifier.fromDataSegment(dataSegment);
-                    log.info("Segment[%s] successfully handed off, dropping.", identifier);
-                    final ListenableFuture<?> dropFuture = appenderator.drop(identifier);
-                    Futures.addCallback(
-                        dropFuture,
-                        new FutureCallback<Object>()
+                  final SegmentIdentifier identifier = SegmentIdentifier.fromDataSegment(dataSegment);
+                  log.info("Segment[%s] successfully handed off, dropping.", identifier);
+                  final ListenableFuture<?> dropFuture = appenderator.drop(identifier);
+                  Futures.addCallback(
+                      dropFuture,
+                      new FutureCallback<Object>()
+                      {
+                        @Override
+                        public void onSuccess(Object result)
                         {
-                          @Override
-                          public void onSuccess(Object result)
-                          {
-                            synchronized (handoffMonitor) {
-                              handoffMonitor.notifyAll();
-                            }
-                          }
-
-                          @Override
-                          public void onFailure(Throwable e)
-                          {
-                            log.warn(e, "Failed to drop segment[%s]?!");
-                            synchronized (handoffMonitor) {
-                              handoffMonitor.notifyAll();
-                            }
+                          synchronized (handoffMonitor) {
+                            handoffMonitor.notifyAll();
                           }
                         }
-                    );
-                  }
-                }
-            );
-          }
 
-          return segmentsAndMetadata;
+                        @Override
+                        public void onFailure(Throwable e)
+                        {
+                          log.warn(e, "Failed to drop segment[%s]?!");
+                          synchronized (handoffMonitor) {
+                            handoffMonitor.notifyAll();
+                          }
+                        }
+                      }
+                  );
+                }
+              }
+          );
         }
+
+        return segmentsAndMetadata;
       }
       catch (Exception e) {
         final long sleepMillis = computeNextRetrySleep(++nTry);
@@ -351,8 +355,6 @@ public class FiniteAppenderatorDriver implements Closeable
         Thread.sleep(sleepMillis);
       }
     }
-
-    return null;
   }
 
   private static long computeNextRetrySleep(final long nTry)
@@ -361,5 +363,35 @@ public class FiniteAppenderatorDriver implements Closeable
     final long maxSleepMillis = 60000;
     final double fuzzyMultiplier = Math.min(Math.max(1 + 0.2 * new Random().nextGaussian(), 0), 2);
     return (long) (Math.min(maxSleepMillis, baseSleepMillis * Math.pow(2, nTry)) * fuzzyMultiplier);
+  }
+
+  private static Set<SegmentIdentifier> segmentsToIdentifiers(final Iterable<DataSegment> segments)
+  {
+    return FluentIterable.from(segments)
+                         .transform(
+                             new Function<DataSegment, SegmentIdentifier>()
+                             {
+                               @Override
+                               public SegmentIdentifier apply(DataSegment segment)
+                               {
+                                 return SegmentIdentifier.fromDataSegment(segment);
+                               }
+                             }
+                         ).toSet();
+  }
+
+  private static Iterable<String> identifiersToStrings(final Iterable<SegmentIdentifier> identifiers)
+  {
+    return FluentIterable.from(identifiers)
+                         .transform(
+                             new Function<SegmentIdentifier, String>()
+                             {
+                               @Override
+                               public String apply(SegmentIdentifier input)
+                               {
+                                 return input.getIdentifierAsString();
+                               }
+                             }
+                         );
   }
 }

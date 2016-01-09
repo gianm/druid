@@ -37,6 +37,7 @@ import com.metamx.common.logger.Logger;
 import io.druid.data.input.Committer;
 import io.druid.data.input.InputRow;
 import io.druid.data.input.impl.InputRowParser;
+import io.druid.indexing.appenderator.ActionBasedUsedSegmentChecker;
 import io.druid.indexing.common.TaskStatus;
 import io.druid.indexing.common.TaskToolbox;
 import io.druid.indexing.common.actions.SegmentAllocateAction;
@@ -63,7 +64,6 @@ import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.joda.time.DateTime;
 
-import javax.annotation.Nullable;
 import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -434,6 +434,7 @@ public class KafkaIndexTask extends AbstractTask
         appenderator,
         segmentAllocator,
         toolbox.getSegmentHandoffNotifierFactory(),
+        new ActionBasedUsedSegmentChecker(toolbox.getTaskActionClient()),
         tuningConfig.getMaxRowsPerSegment()
     );
   }
