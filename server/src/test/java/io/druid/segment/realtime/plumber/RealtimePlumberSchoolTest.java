@@ -254,8 +254,9 @@ public class RealtimePlumberSchoolTest
                new Sink(
                    new Interval(0, TimeUnit.HOURS.toMillis(1)),
                    schema,
-                   tuningConfig,
-                   new DateTime("2014-12-01T12:34:56.789").toString()
+                   tuningConfig.getShardSpec(),
+                   new DateTime("2014-12-01T12:34:56.789").toString(),
+                   tuningConfig.getMaxRowsInMemory()
                )
            );
     Assert.assertNull(plumber.startJob());
@@ -299,8 +300,9 @@ public class RealtimePlumberSchoolTest
                new Sink(
                    new Interval(0, TimeUnit.HOURS.toMillis(1)),
                    schema,
-                   tuningConfig,
-                   new DateTime("2014-12-01T12:34:56.789").toString()
+                   tuningConfig.getShardSpec(),
+                   new DateTime("2014-12-01T12:34:56.789").toString(),
+                   tuningConfig.getMaxRowsInMemory()
                )
            );
     plumber.startJob();
@@ -354,8 +356,9 @@ public class RealtimePlumberSchoolTest
                 new Sink(
                     testInterval,
                     schema2,
-                    tuningConfig,
-                    new DateTime("2014-12-01T12:34:56.789").toString()
+                    tuningConfig.getShardSpec(),
+                    new DateTime("2014-12-01T12:34:56.789").toString(),
+                    tuningConfig.getMaxRowsInMemory()
                 )
             );
     Assert.assertNull(plumber2.startJob());
