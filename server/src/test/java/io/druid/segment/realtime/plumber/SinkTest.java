@@ -70,7 +70,13 @@ public class SinkTest
         null,
         0, 0
     );
-    final Sink sink = new Sink(interval, schema, tuningConfig, version);
+    final Sink sink = new Sink(
+        interval,
+        schema,
+        tuningConfig.getShardSpec(),
+        version,
+        tuningConfig.getMaxRowsInMemory()
+    );
 
     sink.add(
         new InputRow()
