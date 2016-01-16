@@ -19,10 +19,10 @@
 
 package io.druid.indexing.appenderator;
 
-import com.google.api.client.util.Maps;
-import com.google.api.client.util.Sets;
 import com.google.common.base.Function;
 import com.google.common.collect.Iterables;
+import com.google.common.collect.Maps;
+import com.google.common.collect.Sets;
 import io.druid.common.utils.JodaUtils;
 import io.druid.indexing.common.actions.SegmentListUsedAction;
 import io.druid.indexing.common.actions.TaskActionClient;
