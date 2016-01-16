@@ -21,10 +21,12 @@ package io.druid.indexing.kafka;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Function;
 import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Supplier;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
@@ -37,23 +39,25 @@ import com.metamx.common.logger.Logger;
 import io.druid.data.input.Committer;
 import io.druid.data.input.InputRow;
 import io.druid.data.input.impl.InputRowParser;
+import io.druid.indexing.appenderator.ActionBasedSegmentAllocator;
 import io.druid.indexing.appenderator.ActionBasedUsedSegmentChecker;
 import io.druid.indexing.common.TaskStatus;
 import io.druid.indexing.common.TaskToolbox;
-import io.druid.indexing.common.actions.SegmentAllocateAction;
 import io.druid.indexing.common.actions.SegmentInsertAction;
 import io.druid.indexing.common.actions.TaskActionClient;
 import io.druid.indexing.common.task.AbstractTask;
 import io.druid.indexing.common.task.TaskResource;
+import io.druid.query.DruidMetrics;
 import io.druid.query.Query;
 import io.druid.query.QueryRunner;
 import io.druid.segment.indexing.DataSchema;
+import io.druid.segment.indexing.RealtimeIOConfig;
+import io.druid.segment.realtime.FireDepartment;
 import io.druid.segment.realtime.FireDepartmentMetrics;
+import io.druid.segment.realtime.RealtimeMetricsMonitor;
 import io.druid.segment.realtime.appenderator.Appenderator;
 import io.druid.segment.realtime.appenderator.Appenderators;
 import io.druid.segment.realtime.appenderator.FiniteAppenderatorDriver;
-import io.druid.segment.realtime.appenderator.SegmentAllocator;
-import io.druid.segment.realtime.appenderator.SegmentIdentifier;
 import io.druid.segment.realtime.appenderator.SegmentsAndMetadata;
 import io.druid.segment.realtime.appenderator.TransactionalSegmentPublisher;
 import io.druid.timeline.DataSegment;
@@ -62,7 +66,6 @@ import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
-import org.joda.time.DateTime;
 
 import java.io.File;
 import java.io.IOException;
@@ -78,6 +81,7 @@ public class KafkaIndexTask extends AbstractTask
   private static final String TYPE = "index_kafka";
   private static final Random RANDOM = new Random();
   private static final long POLL_TIMEOUT = 100;
+  private static final String METADATA_NEXT_PARTITIONS = "nextPartitions";
 
   private final DataSchema dataSchema;
   private final InputRowParser<ByteBuffer> parser;
@@ -85,6 +89,10 @@ public class KafkaIndexTask extends AbstractTask
   private final KafkaIOConfig ioConfig;
 
   private volatile Appenderator appenderator = null;
+  private volatile FireDepartmentMetrics fireDepartmentMetrics = null;
+  private volatile boolean stopping = false;
+  private volatile boolean publishing = false;
+  private volatile Thread runThread = null;
 
   @JsonCreator
   public KafkaIndexTask(
@@ -154,9 +162,24 @@ public class KafkaIndexTask extends AbstractTask
   {
     log.info("Starting up!");
 
-    final FireDepartmentMetrics metrics = new FireDepartmentMetrics();
+    runThread = Thread.currentThread();
+
+    // Set up FireDepartmentMetrics
+    final FireDepartment fireDepartmentForMetrics = new FireDepartment(
+        dataSchema,
+        new RealtimeIOConfig(null, null, null),
+        null
+    );
+    fireDepartmentMetrics = fireDepartmentForMetrics.getMetrics();
+    toolbox.getMonitorScheduler().addMonitor(
+        new RealtimeMetricsMonitor(
+            ImmutableList.of(fireDepartmentForMetrics),
+            ImmutableMap.of(DruidMetrics.TASK_ID, new String[]{getId()})
+        )
+    );
+
     try (
-        final Appenderator appenderator0 = newAppenderator(metrics, toolbox);
+        final Appenderator appenderator0 = newAppenderator(fireDepartmentMetrics, toolbox);
         final FiniteAppenderatorDriver driver = newDriver(appenderator0, toolbox);
         final KafkaConsumer<byte[], byte[]> consumer = newConsumer()
     ) {
@@ -165,15 +188,27 @@ public class KafkaIndexTask extends AbstractTask
       final String topic = ioConfig.getStartPartitions().getTopic();
 
       // Start up, set up initial offsets.
-      final Object metadata = appenderator.startJob();
+      final Object restoredMetadata = driver.startJob();
       final Map<Integer, Long> nextOffsets = Maps.newHashMap();
-      if (metadata == null) {
+      if (restoredMetadata == null) {
         nextOffsets.putAll(ioConfig.getStartPartitions().getPartitionOffsetMap());
       } else {
-        final Map<Integer, Long> metadataAsMap = (Map<Integer, Long>) metadata;
-        nextOffsets.putAll(metadataAsMap);
+        final Map<String, Object> restoredMetadataMap = (Map) restoredMetadata;
+        final KafkaPartitions restoredNextPartitions = toolbox.getObjectMapper().convertValue(
+            restoredMetadataMap.get(METADATA_NEXT_PARTITIONS),
+            KafkaPartitions.class
+        );
+        nextOffsets.putAll(restoredNextPartitions.getPartitionOffsetMap());
 
-        // Sanity check.
+        // Sanity checks.
+        if (!restoredNextPartitions.getTopic().equals(ioConfig.getStartPartitions().getTopic())) {
+          throw new ISE(
+              "WTF?! Restored topic[%s] but expected topic[%s]",
+              restoredNextPartitions.getTopic(),
+              ioConfig.getStartPartitions().getTopic()
+          );
+        }
+
         if (!nextOffsets.keySet().equals(ioConfig.getStartPartitions().getPartitionOffsetMap().keySet())) {
           throw new ISE(
               "WTF?! Restored partitions[%s] but expected partitions[%s]",
@@ -196,7 +231,12 @@ public class KafkaIndexTask extends AbstractTask
             @Override
             public Object getMetadata()
             {
-              return snapshot;
+              return ImmutableMap.of(
+                  METADATA_NEXT_PARTITIONS, new KafkaPartitions(
+                      ioConfig.getStartPartitions().getTopic(),
+                      snapshot
+                  )
+              );
             }
 
             @Override
@@ -237,14 +277,20 @@ public class KafkaIndexTask extends AbstractTask
       // Main loop.
       boolean stillReading = true;
       while (stillReading) {
-        if (Thread.currentThread().isInterrupted()) {
-          throw new InterruptedException();
+        if (stopping) {
+          log.info("Stopping early.");
+          break;
         }
 
         final ConsumerRecords<byte[], byte[]> records = consumer.poll(POLL_TIMEOUT);
         for (ConsumerRecord<byte[], byte[]> record : records) {
           if (log.isTraceEnabled()) {
-            log.trace("Got topic[%s] partition[%d] offset[%,d].", record.topic(), record.partition(), record.offset());
+            log.trace(
+                "Got topic[%s] partition[%d] offset[%,d].",
+                record.topic(),
+                record.partition(),
+                record.offset()
+            );
           }
 
           if (record.offset() < ioConfig.getEndPartitions().getPartitionOffsetMap().get(record.partition())) {
@@ -275,9 +321,9 @@ public class KafkaIndexTask extends AbstractTask
 
             if (row != null) {
               driver.add(row, committerSupplier);
-              metrics.incrementProcessed();
+              fireDepartmentMetrics.incrementProcessed();
             } else {
-              metrics.incrementUnparseable();
+              fireDepartmentMetrics.incrementUnparseable();
             }
 
             final long nextOffset = record.offset() + 1;
@@ -294,13 +340,23 @@ public class KafkaIndexTask extends AbstractTask
         }
       }
 
+      // Persist pending data.
+      final Committer finalCommitter = committerSupplier.get();
+      driver.persist(finalCommitter);
+
+      publishing = true;
+      if (stopping) {
+        // Stopped gracefully. Exit code shouldn't matter, so fail to be on the safe side.
+        return TaskStatus.failure(getId());
+      }
+
       final TransactionalSegmentPublisher publisher = new TransactionalSegmentPublisher()
       {
         @Override
         public boolean publishSegments(Set<DataSegment> segments, Object commitMetadata) throws IOException
         {
           // Sanity check, we should only be publishing things that match our desired end state.
-          if (!ioConfig.getEndPartitions().getPartitionOffsetMap().equals(commitMetadata)) {
+          if (!ioConfig.getEndPartitions().equals(((Map) commitMetadata).get(METADATA_NEXT_PARTITIONS))) {
             throw new ISE("WTF?! Driver attempted to publish invalid metadata[%s].", commitMetadata);
           }
 
@@ -352,14 +408,19 @@ public class KafkaIndexTask extends AbstractTask
   @Override
   public boolean canRestore()
   {
-    // TODO
-    return false;
+    return true;
   }
 
   @Override
   public void stopGracefully()
   {
-    // TODO
+    log.info("Stopping gracefully.");
+
+    stopping = true;
+    if (publishing && runThread.isAlive()) {
+      log.info("stopGracefully: Run thread started publishing, interrupting it.");
+      runThread.interrupt();
+    }
   }
 
   @Override
@@ -377,6 +438,12 @@ public class KafkaIndexTask extends AbstractTask
         return query.run(appenderator, responseContext);
       }
     };
+  }
+
+  @VisibleForTesting
+  public FireDepartmentMetrics getFireDepartmentMetrics()
+  {
+    return fireDepartmentMetrics;
   }
 
   private Appenderator newAppenderator(FireDepartmentMetrics metrics, TaskToolbox toolbox)
@@ -403,38 +470,16 @@ public class KafkaIndexTask extends AbstractTask
       final TaskToolbox toolbox
   )
   {
-    final SegmentAllocator segmentAllocator = new SegmentAllocator()
-    {
-      private final Object lock = new Object();
-      private String previousSegmentId = null;
-
-      @Override
-      public SegmentIdentifier allocate(DateTime timestamp) throws IOException
-      {
-        synchronized (lock) {
-          final SegmentIdentifier identifier = toolbox.getTaskActionClient().submit(
-              new SegmentAllocateAction(
-                  getDataSource(),
-                  timestamp,
-                  dataSchema.getGranularitySpec().getQueryGranularity(),
-                  dataSchema.getGranularitySpec().getSegmentGranularity(),
-                  ioConfig.getSequenceName(),
-                  previousSegmentId
-              )
-          );
-
-          previousSegmentId = identifier.getIdentifierAsString();
-
-          return identifier;
-        }
-      }
-    };
-
     return new FiniteAppenderatorDriver(
         appenderator,
-        segmentAllocator,
+        new ActionBasedSegmentAllocator(
+            toolbox.getTaskActionClient(),
+            dataSchema,
+            ioConfig.getSequenceName()
+        ),
         toolbox.getSegmentHandoffNotifierFactory(),
         new ActionBasedUsedSegmentChecker(toolbox.getTaskActionClient()),
+        toolbox.getObjectMapper(),
         tuningConfig.getMaxRowsPerSegment()
     );
   }

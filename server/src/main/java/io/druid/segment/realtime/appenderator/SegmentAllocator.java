@@ -28,9 +28,13 @@ public interface SegmentAllocator
   /**
    * Allocates a new segment for a given timestamp.
    *
-   * @param timestamp timestamp of the event which triggered this allocation request
+   * @param timestamp         timestamp of the event which triggered this allocation request
+   * @param previousSegmentId segment identifier returned on the previous call to allocate
    *
    * @return the pending segment identifier, or null if it was impossible to allocate a new segment
    */
-  SegmentIdentifier allocate(DateTime timestamp) throws IOException;
+  SegmentIdentifier allocate(
+      DateTime timestamp,
+      String previousSegmentId
+  ) throws IOException;
 }

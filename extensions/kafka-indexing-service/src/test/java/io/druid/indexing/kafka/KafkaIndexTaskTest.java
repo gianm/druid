@@ -39,6 +39,7 @@ import com.google.common.util.concurrent.MoreExecutors;
 import com.metamx.common.CompressionUtils;
 import com.metamx.common.Granularity;
 import com.metamx.common.ISE;
+import com.metamx.common.guava.Sequences;
 import com.metamx.common.logger.Logger;
 import com.metamx.emitter.EmittingLogger;
 import com.metamx.emitter.core.LoggingEmitter;
@@ -79,6 +80,7 @@ import io.druid.metadata.IndexerSQLMetadataStorageCoordinator;
 import io.druid.metadata.SQLMetadataStorageActionHandlerFactory;
 import io.druid.metadata.TestDerbyConnector;
 import io.druid.query.DefaultQueryRunnerFactoryConglomerate;
+import io.druid.query.Druids;
 import io.druid.query.IntervalChunkingQueryRunnerDecorator;
 import io.druid.query.Query;
 import io.druid.query.QueryRunner;
@@ -86,13 +88,16 @@ import io.druid.query.QueryRunnerFactory;
 import io.druid.query.QueryRunnerFactoryConglomerate;
 import io.druid.query.QueryToolChest;
 import io.druid.query.QueryWatcher;
+import io.druid.query.Result;
 import io.druid.query.SegmentDescriptor;
 import io.druid.query.aggregation.AggregatorFactory;
 import io.druid.query.aggregation.CountAggregatorFactory;
+import io.druid.query.aggregation.LongSumAggregatorFactory;
 import io.druid.query.timeseries.TimeseriesQuery;
 import io.druid.query.timeseries.TimeseriesQueryEngine;
 import io.druid.query.timeseries.TimeseriesQueryQueryToolChest;
 import io.druid.query.timeseries.TimeseriesQueryRunnerFactory;
+import io.druid.query.timeseries.TimeseriesResultValue;
 import io.druid.segment.IndexIO;
 import io.druid.segment.QueryableIndex;
 import io.druid.segment.column.DictionaryEncodedColumn;
@@ -110,7 +115,6 @@ import io.druid.timeline.DataSegment;
 import org.apache.curator.test.TestingCluster;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
-import org.apache.kafka.clients.producer.RecordMetadata;
 import org.easymock.EasyMock;
 import org.joda.time.Interval;
 import org.joda.time.Period;
@@ -123,12 +127,14 @@ import org.junit.rules.TemporaryFolder;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 public class KafkaIndexTaskTest
 {
@@ -142,6 +148,8 @@ public class KafkaIndexTaskTest
   private TaskLockbox taskLockbox;
   private File directory;
 
+  private final List<Task> runningTasks = Lists.newArrayList();
+
   private static final Logger log = new Logger(KafkaIndexTaskTest.class);
 
   private static final DataSchema DATA_SCHEMA;
@@ -152,6 +160,7 @@ public class KafkaIndexTaskTest
       new ProducerRecord<byte[], byte[]>("topic0", 0, null, JB("2010", "c", "y", 1.0f)),
       new ProducerRecord<byte[], byte[]>("topic0", 0, null, JB("2011", "d", "y", 1.0f)),
       new ProducerRecord<byte[], byte[]>("topic0", 0, null, JB("2011", "e", "y", 1.0f)),
+      new ProducerRecord<byte[], byte[]>("topic0", 0, null, "unparseable".getBytes()),
       new ProducerRecord<byte[], byte[]>("topic0", 0, null, JB("2013", "f", "y", 1.0f)),
       new ProducerRecord<byte[], byte[]>("topic0", 1, null, JB("2012", "g", "y", 1.0f))
   );
@@ -228,10 +237,16 @@ public class KafkaIndexTaskTest
   {
     emitter.close();
 
-    taskExec.shutdownNow();
+    synchronized (runningTasks) {
+      for (Task task : runningTasks) {
+        task.stopGracefully();
+      }
 
-    // TODO: For some reason the interrupt above seems to stall out the task thread
-//    taskExec.awaitTermination(9999, TimeUnit.DAYS);
+      runningTasks.clear();
+    }
+
+    taskExec.shutdown();
+    taskExec.awaitTermination(9999, TimeUnit.DAYS);
 
     kafkaServer.close();
     kafkaServer = null;
@@ -246,6 +261,7 @@ public class KafkaIndexTaskTest
   public void testRunSimple() throws Exception
   {
     final KafkaIndexTask task = createTask(
+        null,
         new KafkaIOConfig(
             "sequence0",
             new KafkaPartitions("topic0", ImmutableMap.of(0, 2L)),
@@ -268,6 +284,11 @@ public class KafkaIndexTaskTest
     // Wait for task to exit
     Assert.assertEquals(TaskStatus.Status.SUCCESS, future.get().getStatusCode());
 
+    // Check metrics
+    Assert.assertEquals(3, task.getFireDepartmentMetrics().processed());
+    Assert.assertEquals(0, task.getFireDepartmentMetrics().unparseable());
+    Assert.assertEquals(0, task.getFireDepartmentMetrics().thrownAway());
+
     // Check published metadata
     SegmentDescriptor desc1 = SD(task, "2010/P1D", 0);
     SegmentDescriptor desc2 = SD(task, "2011/P1D", 0);
@@ -286,6 +307,7 @@ public class KafkaIndexTaskTest
   public void testRunReplicas() throws Exception
   {
     final KafkaIndexTask task1 = createTask(
+        null,
         new KafkaIOConfig(
             "sequence0",
             new KafkaPartitions("topic0", ImmutableMap.of(0, 2L)),
@@ -296,6 +318,7 @@ public class KafkaIndexTaskTest
         null
     );
     final KafkaIndexTask task2 = createTask(
+        null,
         new KafkaIOConfig(
             "sequence0",
             new KafkaPartitions("topic0", ImmutableMap.of(0, 2L)),
@@ -320,6 +343,14 @@ public class KafkaIndexTaskTest
     Assert.assertEquals(TaskStatus.Status.SUCCESS, future1.get().getStatusCode());
     Assert.assertEquals(TaskStatus.Status.SUCCESS, future2.get().getStatusCode());
 
+    // Check metrics
+    Assert.assertEquals(3, task1.getFireDepartmentMetrics().processed());
+    Assert.assertEquals(0, task1.getFireDepartmentMetrics().unparseable());
+    Assert.assertEquals(0, task1.getFireDepartmentMetrics().thrownAway());
+    Assert.assertEquals(3, task2.getFireDepartmentMetrics().processed());
+    Assert.assertEquals(0, task2.getFireDepartmentMetrics().unparseable());
+    Assert.assertEquals(0, task2.getFireDepartmentMetrics().thrownAway());
+
     // Check published segments & metadata
     SegmentDescriptor desc1 = SD(task1, "2010/P1D", 0);
     SegmentDescriptor desc2 = SD(task1, "2011/P1D", 0);
@@ -338,6 +369,7 @@ public class KafkaIndexTaskTest
   public void testRunConflicting() throws Exception
   {
     final KafkaIndexTask task1 = createTask(
+        null,
         new KafkaIOConfig(
             "sequence0",
             new KafkaPartitions("topic0", ImmutableMap.of(0, 2L)),
@@ -348,10 +380,11 @@ public class KafkaIndexTaskTest
         null
     );
     final KafkaIndexTask task2 = createTask(
+        null,
         new KafkaIOConfig(
             "sequence1",
             new KafkaPartitions("topic0", ImmutableMap.of(0, 3L)),
-            new KafkaPartitions("topic0", ImmutableMap.of(0, 5L)),
+            new KafkaPartitions("topic0", ImmutableMap.of(0, 7L)),
             kafkaServer.consumerProperties(),
             true
         ),
@@ -373,6 +406,14 @@ public class KafkaIndexTaskTest
     final ListenableFuture<TaskStatus> future2 = runTask(task2);
     Assert.assertEquals(TaskStatus.Status.FAILED, future2.get().getStatusCode());
 
+    // Check metrics
+    Assert.assertEquals(3, task1.getFireDepartmentMetrics().processed());
+    Assert.assertEquals(0, task1.getFireDepartmentMetrics().unparseable());
+    Assert.assertEquals(0, task1.getFireDepartmentMetrics().thrownAway());
+    Assert.assertEquals(3, task2.getFireDepartmentMetrics().processed());
+    Assert.assertEquals(1, task2.getFireDepartmentMetrics().unparseable());
+    Assert.assertEquals(0, task2.getFireDepartmentMetrics().thrownAway());
+
     // Check published segments & metadata, should all be from the first task
     SegmentDescriptor desc1 = SD(task1, "2010/P1D", 0);
     SegmentDescriptor desc2 = SD(task1, "2011/P1D", 0);
@@ -391,6 +432,7 @@ public class KafkaIndexTaskTest
   public void testRunConflictingWithoutTransactions() throws Exception
   {
     final KafkaIndexTask task1 = createTask(
+        null,
         new KafkaIOConfig(
             "sequence0",
             new KafkaPartitions("topic0", ImmutableMap.of(0, 2L)),
@@ -401,10 +443,11 @@ public class KafkaIndexTaskTest
         null
     );
     final KafkaIndexTask task2 = createTask(
+        null,
         new KafkaIOConfig(
             "sequence1",
             new KafkaPartitions("topic0", ImmutableMap.of(0, 3L)),
-            new KafkaPartitions("topic0", ImmutableMap.of(0, 6L)),
+            new KafkaPartitions("topic0", ImmutableMap.of(0, 7L)),
             kafkaServer.consumerProperties(),
             false
         ),
@@ -432,6 +475,14 @@ public class KafkaIndexTaskTest
     final ListenableFuture<TaskStatus> future2 = runTask(task2);
     Assert.assertEquals(TaskStatus.Status.SUCCESS, future2.get().getStatusCode());
 
+    // Check metrics
+    Assert.assertEquals(3, task1.getFireDepartmentMetrics().processed());
+    Assert.assertEquals(0, task1.getFireDepartmentMetrics().unparseable());
+    Assert.assertEquals(0, task1.getFireDepartmentMetrics().thrownAway());
+    Assert.assertEquals(3, task2.getFireDepartmentMetrics().processed());
+    Assert.assertEquals(1, task2.getFireDepartmentMetrics().unparseable());
+    Assert.assertEquals(0, task2.getFireDepartmentMetrics().thrownAway());
+
     // Check published segments & metadata
     SegmentDescriptor desc3 = SD(task2, "2011/P1D", 1);
     SegmentDescriptor desc4 = SD(task2, "2013/P1D", 0);
@@ -449,6 +500,7 @@ public class KafkaIndexTaskTest
   public void testRunOneTaskTwoPartitions() throws Exception
   {
     final KafkaIndexTask task = createTask(
+        null,
         new KafkaIOConfig(
             "sequence0",
             new KafkaPartitions("topic0", ImmutableMap.of(0, 2L, 1, 0L)),
@@ -464,12 +516,17 @@ public class KafkaIndexTaskTest
     // Insert data
     try (final KafkaProducer<byte[], byte[]> kafkaProducer = kafkaServer.newProducer()) {
       for (ProducerRecord<byte[], byte[]> record : RECORDS) {
-        RecordMetadata recordMetadata = kafkaProducer.send(record).get();
+        kafkaProducer.send(record).get();
       }
     }
 
     // Wait for tasks to exit
     Assert.assertEquals(TaskStatus.Status.SUCCESS, future.get().getStatusCode());
+
+    // Check metrics
+    Assert.assertEquals(4, task.getFireDepartmentMetrics().processed());
+    Assert.assertEquals(0, task.getFireDepartmentMetrics().unparseable());
+    Assert.assertEquals(0, task.getFireDepartmentMetrics().thrownAway());
 
     // Check published segments & metadata
     SegmentDescriptor desc1 = SD(task, "2010/P1D", 0);
@@ -491,6 +548,7 @@ public class KafkaIndexTaskTest
   public void testRunTwoTasksTwoPartitions() throws Exception
   {
     final KafkaIndexTask task1 = createTask(
+        null,
         new KafkaIOConfig(
             "sequence0",
             new KafkaPartitions("topic0", ImmutableMap.of(0, 2L)),
@@ -501,6 +559,7 @@ public class KafkaIndexTaskTest
         null
     );
     final KafkaIndexTask task2 = createTask(
+        null,
         new KafkaIOConfig(
             "sequence1",
             new KafkaPartitions("topic0", ImmutableMap.of(1, 0L)),
@@ -517,13 +576,21 @@ public class KafkaIndexTaskTest
     // Insert data
     try (final KafkaProducer<byte[], byte[]> kafkaProducer = kafkaServer.newProducer()) {
       for (ProducerRecord<byte[], byte[]> record : RECORDS) {
-        RecordMetadata recordMetadata = kafkaProducer.send(record).get();
+        kafkaProducer.send(record).get();
       }
     }
 
     // Wait for tasks to exit
     Assert.assertEquals(TaskStatus.Status.SUCCESS, future1.get().getStatusCode());
     Assert.assertEquals(TaskStatus.Status.SUCCESS, future2.get().getStatusCode());
+
+    // Check metrics
+    Assert.assertEquals(3, task1.getFireDepartmentMetrics().processed());
+    Assert.assertEquals(0, task1.getFireDepartmentMetrics().unparseable());
+    Assert.assertEquals(0, task1.getFireDepartmentMetrics().thrownAway());
+    Assert.assertEquals(1, task2.getFireDepartmentMetrics().processed());
+    Assert.assertEquals(0, task2.getFireDepartmentMetrics().unparseable());
+    Assert.assertEquals(0, task2.getFireDepartmentMetrics().thrownAway());
 
     // Check published segments & metadata
     SegmentDescriptor desc1 = SD(task1, "2010/P1D", 0);
@@ -541,6 +608,87 @@ public class KafkaIndexTaskTest
     Assert.assertEquals(ImmutableList.of("g"), readSegmentDim1(desc3));
   }
 
+  @Test(timeout = 60_000L)
+  public void testRestore() throws Exception
+  {
+    final KafkaIndexTask task1 = createTask(
+        null,
+        new KafkaIOConfig(
+            "sequence0",
+            new KafkaPartitions("topic0", ImmutableMap.of(0, 2L)),
+            new KafkaPartitions("topic0", ImmutableMap.of(0, 5L)),
+            kafkaServer.consumerProperties(),
+            true
+        ),
+        null
+    );
+
+    final ListenableFuture<TaskStatus> future1 = runTask(task1);
+
+    // Insert some data, but not enough for the task to finish
+    try (final KafkaProducer<byte[], byte[]> kafkaProducer = kafkaServer.newProducer()) {
+      for (ProducerRecord<byte[], byte[]> record : Iterables.limit(RECORDS, 4)) {
+        kafkaProducer.send(record).get();
+      }
+    }
+
+    while (countEvents(task1) != 2) {
+      Thread.sleep(25);
+    }
+
+    Assert.assertEquals(2, countEvents(task1));
+
+    // Stop gracefully
+    task1.stopGracefully();
+    Assert.assertEquals(TaskStatus.Status.FAILED, future1.get().getStatusCode());
+
+    // Start a new task
+    final KafkaIndexTask task2 = createTask(
+        task1.getId(),
+        new KafkaIOConfig(
+            "sequence0",
+            new KafkaPartitions("topic0", ImmutableMap.of(0, 2L)),
+            new KafkaPartitions("topic0", ImmutableMap.of(0, 5L)),
+            kafkaServer.consumerProperties(),
+            true
+        ),
+        null
+    );
+
+    final ListenableFuture<TaskStatus> future2 = runTask(task2);
+
+    // Insert remaining data
+    try (final KafkaProducer<byte[], byte[]> kafkaProducer = kafkaServer.newProducer()) {
+      for (ProducerRecord<byte[], byte[]> record : Iterables.skip(RECORDS, 4)) {
+        kafkaProducer.send(record).get();
+      }
+    }
+
+    // Wait for task to exit
+    Assert.assertEquals(TaskStatus.Status.SUCCESS, future2.get().getStatusCode());
+
+    // Check metrics
+    Assert.assertEquals(2, task1.getFireDepartmentMetrics().processed());
+    Assert.assertEquals(0, task1.getFireDepartmentMetrics().unparseable());
+    Assert.assertEquals(0, task1.getFireDepartmentMetrics().thrownAway());
+    Assert.assertEquals(1, task2.getFireDepartmentMetrics().processed());
+    Assert.assertEquals(0, task2.getFireDepartmentMetrics().unparseable());
+    Assert.assertEquals(0, task2.getFireDepartmentMetrics().thrownAway());
+
+    // Check published segments & metadata
+    SegmentDescriptor desc1 = SD(task1, "2010/P1D", 0);
+    SegmentDescriptor desc2 = SD(task1, "2011/P1D", 0);
+    Assert.assertEquals(ImmutableSet.of(desc1, desc2), publishedDescriptors());
+    Assert.assertEquals(
+        new KafkaDataSourceMetadata(new KafkaPartitions("topic0", ImmutableMap.of(0, 5L))),
+        metadataStorageCoordinator.getDataSourceMetadata(DATA_SCHEMA.getDataSource())
+    );
+
+    // Check segments in deep storage
+    Assert.assertEquals(ImmutableList.of("c"), readSegmentDim1(desc1));
+    Assert.assertEquals(ImmutableList.of("d", "e"), readSegmentDim1(desc2));
+  }
+
   private ListenableFuture<TaskStatus> runTask(final Task task)
   {
     try {
@@ -551,6 +699,9 @@ public class KafkaIndexTaskTest
     }
     taskLockbox.syncFromStorage();
     final TaskToolbox toolbox = toolboxFactory.build(task);
+    synchronized (runningTasks) {
+      runningTasks.add(task);
+    }
     return taskExec.submit(
         new Callable<TaskStatus>()
         {
@@ -589,11 +740,11 @@ public class KafkaIndexTaskTest
   }
 
   private KafkaIndexTask createTask(
+      final String taskId,
       final KafkaIOConfig ioConfig,
       final Integer maxRowsPerSegment
   )
   {
-    final ObjectMapper objectMapper = new DefaultObjectMapper();
     final KafkaTuningConfig tuningConfig = new KafkaTuningConfig(
         1000,
         maxRowsPerSegment,
@@ -603,7 +754,7 @@ public class KafkaIndexTaskTest
         null
     );
     return new KafkaIndexTask(
-        null,
+        taskId,
         null,
         DATA_SCHEMA,
         tuningConfig,
@@ -835,6 +986,27 @@ public class KafkaIndexTaskTest
       values.add(value);
     }
     return values;
+  }
+
+  public long countEvents(final Task task) throws Exception
+  {
+    // Do a query.
+    TimeseriesQuery query = Druids.newTimeseriesQueryBuilder()
+                                  .dataSource(DATA_SCHEMA.getDataSource())
+                                  .aggregators(
+                                      ImmutableList.<AggregatorFactory>of(
+                                          new LongSumAggregatorFactory("rows", "rows")
+                                      )
+                                  ).granularity(QueryGranularity.ALL)
+                                  .intervals("0000/3000")
+                                  .build();
+
+    ArrayList<Result<TimeseriesResultValue>> results = Sequences.toList(
+        task.getQueryRunner(query).run(query, ImmutableMap.<String, Object>of()),
+        Lists.<Result<TimeseriesResultValue>>newArrayList()
+    );
+
+    return results.isEmpty() ? 0 : results.get(0).getValue().getLongMetric("rows");
   }
 
   private static byte[] JB(String timestamp, String dim1, String dim2, double met1)
