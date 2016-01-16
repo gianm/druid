@@ -538,6 +538,7 @@ public class AppenderatorImpl implements Appenderator
     log.info("Submitting persist runnable for dataSource[%s]", schema.getDataSource());
 
     final String threadName = String.format("%s-incremental-persist", schema.getDataSource());
+    final Object commitMetadata = committer.getMetadata();
     final Stopwatch runExecStopwatch = Stopwatch.createStarted();
     final Stopwatch persistStopwatch = Stopwatch.createStarted();
     final ListenableFuture<Object> future = persistExecutor.submit(
@@ -552,7 +553,7 @@ public class AppenderatorImpl implements Appenderator
               }
 
               log.info(
-                  "Committing metadata[%s] for sinks[%s].", committer.getMetadata(), Joiner.on(", ").join(
+                  "Committing metadata[%s] for sinks[%s].", commitMetadata, Joiner.on(", ").join(
                       Iterables.transform(
                           commitHydrants.entrySet(),
                           new Function<Map.Entry<SegmentIdentifier, Integer>, String>()
@@ -568,9 +569,9 @@ public class AppenderatorImpl implements Appenderator
               );
 
               committer.run();
-              objectMapper.writeValue(computeCommitFile(), Committed.create(commitHydrants, committer.getMetadata()));
+              objectMapper.writeValue(computeCommitFile(), Committed.create(commitHydrants, commitMetadata));
 
-              return committer.getMetadata();
+              return commitMetadata;
             }
             catch (Exception e) {
               metrics.incrementFailedPersists();
@@ -883,7 +884,7 @@ public class AppenderatorImpl implements Appenderator
       throw new ISE(e, "Failed to read commitFile: %s", commitFile);
     }
 
-    log.info("Loading sinks: %s", committed.getHydrants().keySet());
+    log.info("Loading sinks from[%s]: %s", baseDir, committed.getHydrants().keySet());
 
     for (File sinkDir : files) {
       final File identifierFile = new File(sinkDir, IDENTIFIER_FILE_NAME);
@@ -972,7 +973,7 @@ public class AppenderatorImpl implements Appenderator
         sinkTimeline.add(
             currSink.getInterval(),
             currSink.getVersion(),
-            new SingleElementPartitionChunk<>(currSink)
+            identifier.getShardSpec().createChunk(currSink)
         );
 
         segmentAnnouncer.announceSegment(currSink.getSegment());
@@ -1064,7 +1065,7 @@ public class AppenderatorImpl implements Appenderator
             sinkTimeline.remove(
                 sink.getInterval(),
                 sink.getVersion(),
-                new SingleElementPartitionChunk<>(sink)
+                identifier.getShardSpec().createChunk(sink)
             );
 
             if (removeOnDiskData) {

@@ -19,10 +19,12 @@
 
 package io.druid.segment.realtime.appenderator;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Function;
 import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Supplier;
+import com.google.common.base.Throwables;
 import com.google.common.collect.FluentIterable;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
@@ -42,7 +44,6 @@ import io.druid.segment.realtime.plumber.SegmentHandoffNotifierFactory;
 import io.druid.timeline.DataSegment;
 import org.joda.time.DateTime;
 
-import javax.annotation.Nullable;
 import java.io.Closeable;
 import java.io.IOException;
 import java.util.List;
@@ -55,24 +56,32 @@ import java.util.TreeMap;
 /**
  * A FiniteAppenderatorDriver drives an Appenderator to index a finite stream of data. This class does not help you
  * index unbounded streams. All handoff is done at the end of indexing.
- * <p/>
+ *
  * This class helps with doing things that Appenderators don't, including deciding which segments to use (with a
  * SegmentAllocator), publishing segments to the metadata store (with a SegmentPublisher), and monitoring handoff (with
  * a SegmentHandoffNotifier).
+ *
+ * Note that the commit metadata stored by this class via the underlying Appenderator is not the same metadata as
+ * you pass in. It's wrapped in some extra metadata needed by the driver.
  */
 public class FiniteAppenderatorDriver implements Closeable
 {
   private static final Logger log = new Logger(FiniteAppenderatorDriver.class);
+  private static final String METADATA_PREVIOUS_SEGMENT_ID = "previousSegmentId";
+  private static final String METADATA_ACTIVE_SEGMENTS = "activeSegments";
+  private static final String METADATA_CALLER_METADATA = "callerMetadata";
 
   private final Appenderator appenderator;
   private final SegmentAllocator segmentAllocator;
   private final SegmentHandoffNotifier handoffNotifier;
   private final UsedSegmentChecker usedSegmentChecker;
+  private final ObjectMapper objectMapper;
   private final int maxRowsPerSegment;
 
   // Key = Start of segment intervals. Value = Segment we're currently adding data to.
-  // All access must be synchronized.
+  // All access to "activeSegments" and "lastSegmentId" must be synchronized on "activeSegments".
   private final NavigableMap<Long, SegmentIdentifier> activeSegments = new TreeMap<>();
+  private volatile String lastSegmentId = null;
 
   // Notified when segments are dropped.
   private final Object handoffMonitor = new Object();
@@ -82,6 +91,7 @@ public class FiniteAppenderatorDriver implements Closeable
       SegmentAllocator segmentAllocator,
       SegmentHandoffNotifierFactory handoffNotifierFactory,
       UsedSegmentChecker usedSegmentChecker,
+      ObjectMapper objectMapper,
       int maxRowsPerSegment
   )
   {
@@ -90,7 +100,39 @@ public class FiniteAppenderatorDriver implements Closeable
     this.handoffNotifier = Preconditions.checkNotNull(handoffNotifierFactory, "handoffNotifierFactory")
                                         .createSegmentHandoffNotifier(appenderator.getDataSource());
     this.usedSegmentChecker = Preconditions.checkNotNull(usedSegmentChecker, "usedSegmentChecker");
+    this.objectMapper = Preconditions.checkNotNull(objectMapper, "objectMapper");
     this.maxRowsPerSegment = maxRowsPerSegment;
+  }
+
+  /**
+   * Perform any initial setup and return currently persisted commit metadata.
+   *
+   * Note that this method returns the same metadata you've passed in with your Committers, even though this class
+   * stores extra metadata on disk.
+   *
+   * @return currently persisted commit metadata
+   */
+  public Object startJob()
+  {
+    final FiniteAppenderatorDriverMetadata metadata = objectMapper.convertValue(
+        appenderator.startJob(),
+        FiniteAppenderatorDriverMetadata.class
+    );
+
+    log.info("Restored metadata[%s].", metadata);
+
+    if (metadata != null) {
+      synchronized (activeSegments) {
+        for (SegmentIdentifier identifier : metadata.getActiveSegments()) {
+          activeSegments.put(identifier.getInterval().getStartMillis(), identifier);
+        }
+        lastSegmentId = metadata.getPreviousSegmentId();
+      }
+
+      return metadata.getCallerMetadata();
+    } else {
+      return null;
+    }
   }
 
   /**
@@ -124,7 +166,7 @@ public class FiniteAppenderatorDriver implements Closeable
 
     if (identifier != null) {
       try {
-        final int numRows = appenderator.add(identifier, row, committerSupplier);
+        final int numRows = appenderator.add(identifier, row, wrapCommitterSupplier(committerSupplier));
         if (numRows >= maxRowsPerSegment) {
           moveSegmentOut(ImmutableList.of(identifier));
         }
@@ -152,8 +194,37 @@ public class FiniteAppenderatorDriver implements Closeable
   }
 
   /**
+   * Persist all data indexed through this driver so far. Blocks until complete.
+   *
+   * Should be called after all data has been added through {@link #add(InputRow, Supplier)}.
+   *
+   * @param committer committer representing all data that has been added so far
+   *
+   * @return commitMetadata persisted
+   */
+  public Object persist(final Committer committer) throws InterruptedException
+  {
+    try {
+      log.info("Persisting data.");
+      final long start = System.currentTimeMillis();
+      final Object commitMetadata = appenderator.persistAll(wrapCommitter(committer)).get();
+      log.info("Persisted pending data in %,dms.", System.currentTimeMillis() - start);
+      return commitMetadata;
+    }
+    catch (InterruptedException e) {
+      throw e;
+    }
+    catch (Exception e) {
+      throw Throwables.propagate(e);
+    }
+  }
+
+  /**
    * Publish all data indexed through this driver so far, and waits for it to be handed off. Blocks until complete.
    * Retries forever on transient failures, but may exit early on permanent failures.
+   *
+   * Should be called after all data has been added and persisted through {@link #add(InputRow, Supplier)} and
+   * {@link #persist(Committer)}.
    *
    * @param publisher publisher to use for this set of segments
    * @param committer committer representing all data that has been added so far
@@ -166,7 +237,7 @@ public class FiniteAppenderatorDriver implements Closeable
       final Committer committer
   ) throws InterruptedException
   {
-    final SegmentsAndMetadata segmentsAndMetadata = publishAll(publisher, committer);
+    final SegmentsAndMetadata segmentsAndMetadata = publishAll(publisher, wrapCommitter(committer));
 
     if (segmentsAndMetadata != null) {
       log.info("Awaiting handoff...");
@@ -211,7 +282,7 @@ public class FiniteAppenderatorDriver implements Closeable
         return existing;
       } else {
         // Allocate new segment.
-        final SegmentIdentifier newSegment = segmentAllocator.allocate(timestamp);
+        final SegmentIdentifier newSegment = segmentAllocator.allocate(timestamp, lastSegmentId);
 
         if (newSegment != null) {
           final Long key = newSegment.getInterval().getStartMillis();
@@ -226,9 +297,10 @@ public class FiniteAppenderatorDriver implements Closeable
 
           log.info("New segment[%s].", newSegment);
           activeSegments.put(key, newSegment);
+          lastSegmentId = newSegment.getIdentifierAsString();
         } else {
           // Well, we tried.
-          // TODO: Blacklist the interval for a while, so we don't waste time continuously trying?
+          // TODO: Blacklist the interval for a while, so we don't waste time trying again? Customizable behavior?
           log.warn("Cannot allocate segment for timestamp[%s].", timestamp);
         }
 
@@ -253,17 +325,20 @@ public class FiniteAppenderatorDriver implements Closeable
     }
   }
 
+  /**
+   * Push and publish all segments to the metadata store.
+   *
+   * @param publisher segment publisher
+   * @param committer wrapped committer (from wrapCommitter)
+   *
+   * @return published segments and metadata
+   */
   private SegmentsAndMetadata publishAll(
       final TransactionalSegmentPublisher publisher,
       final Committer committer
   ) throws InterruptedException
   {
-    final List<SegmentIdentifier> theSegments;
-
-    synchronized (activeSegments) {
-      activeSegments.clear();
-      theSegments = ImmutableList.copyOf(appenderator.getSegments());
-    }
+    final List<SegmentIdentifier> theSegments = ImmutableList.copyOf(appenderator.getSegments());
 
     long nTry = 0;
     while (true) {
@@ -288,7 +363,7 @@ public class FiniteAppenderatorDriver implements Closeable
 
         final boolean published = publisher.publishSegments(
             ImmutableSet.copyOf(segmentsAndMetadata.getSegments()),
-            segmentsAndMetadata.getCommitMetadata()
+            ((FiniteAppenderatorDriverMetadata) segmentsAndMetadata.getCommitMetadata()).getCallerMetadata()
         );
 
         if (published) {
@@ -349,11 +424,52 @@ public class FiniteAppenderatorDriver implements Closeable
 
         return segmentsAndMetadata;
       }
+      catch (InterruptedException e) {
+        throw e;
+      }
       catch (Exception e) {
         final long sleepMillis = computeNextRetrySleep(++nTry);
         log.warn(e, "Failed publishAll (try %d), retrying in %,dms.", nTry, sleepMillis);
         Thread.sleep(sleepMillis);
       }
+    }
+  }
+
+  private Supplier<Committer> wrapCommitterSupplier(final Supplier<Committer> committerSupplier)
+  {
+    return new Supplier<Committer>()
+    {
+      @Override
+      public Committer get()
+      {
+        return wrapCommitter(committerSupplier.get());
+      }
+    };
+  }
+
+  private Committer wrapCommitter(final Committer committer)
+  {
+    synchronized (activeSegments) {
+      final FiniteAppenderatorDriverMetadata wrappedMetadata = new FiniteAppenderatorDriverMetadata(
+          ImmutableList.copyOf(activeSegments.values()),
+          lastSegmentId,
+          committer.getMetadata()
+      );
+
+      return new Committer()
+      {
+        @Override
+        public Object getMetadata()
+        {
+          return wrappedMetadata;
+        }
+
+        @Override
+        public void run()
+        {
+          committer.run();
+        }
+      };
     }
   }
 
