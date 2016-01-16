@@ -19,8 +19,8 @@
 
 package io.druid.indexing.kafka.test;
 
-import com.google.api.client.util.Maps;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Maps;
 import kafka.server.KafkaConfig;
 import kafka.server.KafkaServer;
 import kafka.utils.SystemTime$;
