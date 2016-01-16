@@ -100,7 +100,10 @@ public abstract class SQLMetadataConnector implements MetadataStorageConnector
 
   public abstract boolean tableExists(Handle handle, final String tableName);
 
-  public <T> T retryWithHandle(final HandleCallback<T> callback)
+  public <T> T retryWithHandle(
+      final HandleCallback<T> callback,
+      final Predicate<Throwable> myShouldRetry
+  )
   {
     final Callable<T> call = new Callable<T>()
     {
@@ -112,11 +115,16 @@ public abstract class SQLMetadataConnector implements MetadataStorageConnector
     };
     final int maxTries = 10;
     try {
-      return RetryUtils.retry(call, shouldRetry, maxTries);
+      return RetryUtils.retry(call, myShouldRetry, maxTries);
     }
     catch (Exception e) {
       throw Throwables.propagate(e);
     }
+  }
+
+  public <T> T retryWithHandle(final HandleCallback<T> callback)
+  {
+    return retryWithHandle(callback, shouldRetry);
   }
 
   public <T> T retryTransaction(final TransactionCallback<T> callback)
