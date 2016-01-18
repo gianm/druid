@@ -275,6 +275,7 @@ public class KafkaIndexTask extends AbstractTask
       }
 
       // Main loop.
+      // TODO: Support early termination (triggered by a supervisor)
       boolean stillReading = true;
       while (stillReading) {
         if (stopping) {
