@@ -124,6 +124,8 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
 
 import java.io.File;
 import java.io.IOException;
@@ -136,8 +138,11 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
+@RunWith(Parameterized.class)
 public class KafkaIndexTaskTest
 {
+  private final boolean buildV9Directly;
+
   private TestingCluster zkServer;
   private TestBroker kafkaServer;
   private ServiceEmitter emitter;
@@ -189,6 +194,17 @@ public class KafkaIndexTaskTest
         new UniformGranularitySpec(Granularity.DAY, QueryGranularity.NONE, null),
         objectMapper
     );
+  }
+
+  @Parameterized.Parameters(name = "buildV9Directly = {0}")
+  public static Iterable<Object[]> constructorFeeder()
+  {
+    return ImmutableList.of(new Object[]{true}, new Object[]{false});
+  }
+
+  public KafkaIndexTaskTest(boolean buildV9Directly)
+  {
+    this.buildV9Directly = buildV9Directly;
   }
 
   @Rule
@@ -751,7 +767,8 @@ public class KafkaIndexTaskTest
         new Period("P1Y"),
         null,
         null,
-        null
+        null,
+        buildV9Directly
     );
     return new KafkaIndexTask(
         taskId,

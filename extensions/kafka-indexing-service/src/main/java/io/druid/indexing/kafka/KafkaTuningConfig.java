@@ -39,6 +39,7 @@ public class KafkaTuningConfig implements TuningConfig, AppenderatorConfig
   private final File basePersistDirectory;
   private final int maxPendingPersists;
   private final IndexSpec indexSpec;
+  private final boolean buildV9Directly;
 
   @JsonCreator
   public KafkaTuningConfig(
@@ -47,7 +48,8 @@ public class KafkaTuningConfig implements TuningConfig, AppenderatorConfig
       @JsonProperty("intermediatePersistPeriod") Period intermediatePersistPeriod,
       @JsonProperty("basePersistDirectory") File basePersistDirectory,
       @JsonProperty("maxPendingPersists") Integer maxPendingPersists,
-      @JsonProperty("indexSpec") IndexSpec indexSpec
+      @JsonProperty("indexSpec") IndexSpec indexSpec,
+      @JsonProperty("buildV9Directly") Boolean buildV9Directly
   )
   {
     // Cannot be a static because default basePersistDirectory is unique per-instance
@@ -61,6 +63,7 @@ public class KafkaTuningConfig implements TuningConfig, AppenderatorConfig
     this.basePersistDirectory = defaults.getBasePersistDirectory();
     this.maxPendingPersists = maxPendingPersists == null ? defaults.getMaxPendingPersists() : maxPendingPersists;
     this.indexSpec = indexSpec == null ? defaults.getIndexSpec() : indexSpec;
+    this.buildV9Directly = buildV9Directly == null ? defaults.getBuildV9Directly() : buildV9Directly;
   }
 
   @JsonProperty
@@ -99,6 +102,12 @@ public class KafkaTuningConfig implements TuningConfig, AppenderatorConfig
     return indexSpec;
   }
 
+  @JsonProperty
+  public Boolean getBuildV9Directly()
+  {
+    return buildV9Directly;
+  }
+
   public KafkaTuningConfig withBasePersistDirectory(File dir)
   {
     return new KafkaTuningConfig(
@@ -107,7 +116,8 @@ public class KafkaTuningConfig implements TuningConfig, AppenderatorConfig
         intermediatePersistPeriod,
         dir,
         maxPendingPersists,
-        indexSpec
+        indexSpec,
+        buildV9Directly
     );
   }
 }
