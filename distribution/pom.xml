@@ -132,6 +132,7 @@
                             <descriptors>
                                 <descriptor>src/assembly/mysql_assembly.xml</descriptor>
                             </descriptors>
+                            <attach>false</attach>
                         </configuration>
                     </execution>
                 </executions>
