@@ -114,6 +114,8 @@ public class FiniteAppenderatorDriver implements Closeable
    */
   public Object startJob()
   {
+    handoffNotifier.start();
+
     final FiniteAppenderatorDriverMetadata metadata = objectMapper.convertValue(
         appenderator.startJob(),
         FiniteAppenderatorDriverMetadata.class
