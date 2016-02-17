@@ -34,6 +34,7 @@ import io.druid.indexing.common.actions.TaskActionClientFactory;
 import io.druid.indexing.common.task.Task;
 import io.druid.indexing.overlord.autoscaling.ScalingStats;
 import io.druid.indexing.overlord.config.TaskQueueConfig;
+import io.druid.indexing.overlord.supervisor.IngestionSupervisor;
 import io.druid.server.DruidNode;
 import io.druid.server.initialization.IndexerZkConfig;
 import org.apache.curator.framework.CuratorFramework;
@@ -42,6 +43,7 @@ import org.apache.curator.framework.recipes.leader.LeaderSelectorListener;
 import org.apache.curator.framework.recipes.leader.Participant;
 import org.apache.curator.framework.state.ConnectionState;
 
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
@@ -55,6 +57,7 @@ public class TaskMaster
   private final ReentrantLock giant = new ReentrantLock();
   private final Condition mayBeStopped = giant.newCondition();
   private final TaskActionClientFactory taskActionClientFactory;
+  private final Set<IngestionSupervisor> supervisors;
 
   private final AtomicReference<Lifecycle> leaderLifecycleRef = new AtomicReference<>(null);
 
@@ -75,9 +78,11 @@ public class TaskMaster
       final TaskRunnerFactory runnerFactory,
       final CuratorFramework curator,
       final ServiceAnnouncer serviceAnnouncer,
-      final ServiceEmitter emitter
+      final ServiceEmitter emitter,
+      final Set<IngestionSupervisor> supervisors
   )
   {
+    this.supervisors = supervisors;
     this.taskActionClientFactory = taskActionClientFactory;
     this.leaderSelector = new LeaderSelector(
         curator,
@@ -112,8 +117,14 @@ public class TaskMaster
                 log.makeAlert("TaskMaster set a new Lifecycle without the old one being cleared!  Race condition")
                    .emit();
               }
+
               leaderLifecycle.addManagedInstance(taskRunner);
               leaderLifecycle.addManagedInstance(taskQueue);
+
+              for (IngestionSupervisor supervisor : supervisors) {
+                leaderLifecycle.addManagedInstance(supervisor);
+              }
+
               leaderLifecycle.addHandler(
                   new Lifecycle.Handler()
                   {
@@ -279,5 +290,17 @@ public class TaskMaster
     } else {
       return Optional.absent();
     }
+  }
+
+  public Optional<IngestionSupervisor> getSupervisor(Class<? extends IngestionSupervisor> clazz) {
+    if (leading) {
+      for (IngestionSupervisor supervisor : supervisors) {
+        if (clazz.isInstance(supervisor)) {
+          return Optional.of(supervisor);
+        }
+      }
+    }
+
+    return Optional.absent();
   }
 }

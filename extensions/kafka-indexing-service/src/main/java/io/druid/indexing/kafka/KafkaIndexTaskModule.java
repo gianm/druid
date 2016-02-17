@@ -24,12 +24,22 @@ import com.fasterxml.jackson.databind.jsontype.NamedType;
 import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.google.common.collect.ImmutableList;
 import com.google.inject.Binder;
+import io.druid.guice.ConfigProvider;
+import io.druid.indexing.kafka.supervisor.KafkaSupervisor;
+import io.druid.indexing.kafka.supervisor.KafkaSupervisorConfig;
+import io.druid.indexing.kafka.supervisor.KafkaSupervisorResource;
+import io.druid.indexing.overlord.supervisor.SupervisorModule;
 import io.druid.initialization.DruidModule;
 
 import java.util.List;
 
 public class KafkaIndexTaskModule implements DruidModule
 {
+  public KafkaIndexTaskModule() {
+    SupervisorModule.register(KafkaSupervisor.class);
+    SupervisorModule.registerResource(KafkaSupervisorResource.class);
+  }
+
   @Override
   public List<? extends Module> getJacksonModules()
   {
@@ -47,5 +57,6 @@ public class KafkaIndexTaskModule implements DruidModule
   @Override
   public void configure(Binder binder)
   {
+    ConfigProvider.bind(binder, KafkaSupervisorConfig.class);
   }
 }

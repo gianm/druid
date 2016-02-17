@@ -23,6 +23,7 @@ import com.google.common.base.Function;
 import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.MoreExecutors;
@@ -48,6 +49,7 @@ import io.druid.indexing.overlord.TaskStorage;
 import io.druid.indexing.overlord.TaskStorageQueryAdapter;
 import io.druid.indexing.overlord.autoscaling.ScalingStats;
 import io.druid.indexing.overlord.config.TaskQueueConfig;
+import io.druid.indexing.overlord.supervisor.IngestionSupervisor;
 import io.druid.server.DruidNode;
 import io.druid.server.initialization.IndexerZkConfig;
 import io.druid.server.initialization.ZkPathsConfig;
@@ -170,7 +172,7 @@ public class OverlordResourceTest
             announcementLatch.countDown();
           }
         },
-        serviceEmitter
+        serviceEmitter, ImmutableSet.<IngestionSupervisor>of()
     );
     EmittingLogger.registerEmitter(serviceEmitter);
   }
