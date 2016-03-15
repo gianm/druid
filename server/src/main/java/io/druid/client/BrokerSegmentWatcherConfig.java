@@ -17,23 +17,21 @@
  * under the License.
  */
 
-package io.druid.query.search.search;
+package io.druid.client;
 
-import com.fasterxml.jackson.annotation.JsonSubTypes;
-import com.fasterxml.jackson.annotation.JsonTypeInfo;
+import com.fasterxml.jackson.annotation.JsonProperty;
 
-import java.util.Comparator;
+import java.util.Set;
 
 /**
  */
-@JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "type", defaultImpl = LexicographicSearchSortSpec.class)
-@JsonSubTypes(value = {
-    @JsonSubTypes.Type(name = "lexicographic", value = LexicographicSearchSortSpec.class),
-    @JsonSubTypes.Type(name = "strlen", value = StrlenSearchSortSpec.class)
-})
-public interface SearchSortSpec
+public class BrokerSegmentWatcherConfig
 {
-  Comparator<SearchHit> getComparator();
+  @JsonProperty
+  private Set<String> watchedTiers = null;
 
-  byte[] getCacheKey();
+  public Set<String> getWatchedTiers()
+  {
+    return watchedTiers;
+  }
 }

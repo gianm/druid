@@ -176,7 +176,8 @@ public class OverlordResourceTest
             announcementLatch.countDown();
           }
         },
-        serviceEmitter
+        serviceEmitter,
+        null
     );
     EmittingLogger.registerEmitter(serviceEmitter);
   }

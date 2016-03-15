@@ -17,23 +17,10 @@
  * under the License.
  */
 
-package io.druid.query.search.search;
+package io.druid.indexing.overlord.supervisor;
 
-import com.fasterxml.jackson.annotation.JsonSubTypes;
-import com.fasterxml.jackson.annotation.JsonTypeInfo;
-
-import java.util.Comparator;
-
-/**
- */
-@JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "type", defaultImpl = LexicographicSearchSortSpec.class)
-@JsonSubTypes(value = {
-    @JsonSubTypes.Type(name = "lexicographic", value = LexicographicSearchSortSpec.class),
-    @JsonSubTypes.Type(name = "strlen", value = StrlenSearchSortSpec.class)
-})
-public interface SearchSortSpec
+public interface Supervisor
 {
-  Comparator<SearchHit> getComparator();
-
-  byte[] getCacheKey();
+  void start();
+  void stop();
 }
