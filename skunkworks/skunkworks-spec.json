@@ -1,0 +1,50 @@
+[
+  {
+    "dataSchema" : {
+      "dataSource" : "skunkworks",
+      "parser" : {
+        "type" : "string",
+        "parseSpec" : {
+          "format" : "json",
+          "timestampSpec" : {
+            "column" : "timestamp",
+            "format" : "auto"
+          },
+          "dimensionsSpec" : {
+            "dimensions": [],
+            "dimensionExclusions" : [],
+            "spatialDimensions" : []
+          }
+        }
+      },
+      "metricsSpec" : [],
+      "granularitySpec" : {
+        "type" : "uniform",
+        "segmentGranularity" : "MINUTE",
+        "queryGranularity" : "NONE"
+      }
+    },
+    "ioConfig" : {
+      "type" : "realtime",
+      "firehose" : {
+        "type" : "local",
+        "filter" : "*.json",
+        "baseDir" : "/tmp/realtime/input"
+      },
+      "plumber" : {
+        "type" : "appenderator",
+        "appenderator" : {
+          "type" : "skunkworks"
+        }
+      }
+    },
+    "tuningConfig": {
+      "type" : "realtime",
+      "windowPeriod": "P1000D",
+      "basePersistDirectory": "/tmp/realtime/persist",
+      "rejectionPolicy": {
+        "type": "none"
+      }
+    }
+  }
+]
