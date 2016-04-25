@@ -47,7 +47,7 @@ import java.util.Random;
 import java.util.concurrent.TimeUnit;
 
 @State(Scope.Benchmark)
-public class IncrementalIndexAddRowsBenchmark
+public class IncrementalIndexRowTypeBenchmark
 {
   private IncrementalIndex incIndex;
   private IncrementalIndex incFloatIndex;
