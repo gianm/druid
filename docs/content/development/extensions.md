@@ -41,6 +41,7 @@ If you'd like to take on maintenance for a community extension, please post on [
 |Name|Description|Docs|
 |----|-----------|----|
 |druid-azure-extensions|Microsoft Azure deep storage.|[link](../development/extensions-contrib/azure.html)|
+|druid-bitmap-aggregation|Bitmap aggregations and filters.|[link](../development/extensions-contrib/bitmap-aggregation.html)|
 |druid-cassandra-storage|Apache Cassandra deep storage.|[link](../development/extensions-contrib/cassandra.html)|
 |druid-cloudfiles-extensions|Rackspace Cloudfiles deep storage and firehose.|[link](../development/extensions-contrib/cloudfiles.html)|
 |druid-kafka-eight-simpleConsumer|Kafka ingest firehose (low level consumer).|[link](../development/extensions-contrib/kafka-simple.html)|
