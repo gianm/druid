@@ -95,7 +95,7 @@ public abstract class BaseFilterTest
   public void setUp() throws Exception
   {
     final Pair<StorageAdapter, Closeable> pair = finisher.apply(
-        indexBuilder.tmpDir(temporaryFolder.newFolder()).add(rows)
+        indexBuilder.tmpDir(temporaryFolder.newFolder()).rows(rows)
     );
     this.adapter = pair.lhs;
     this.closeable = pair.rhs;

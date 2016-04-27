@@ -43,6 +43,7 @@ All of these community extensions can be downloaded using *pull-deps* with the c
 |Name|Description|Docs|
 |----|-----------|----|
 |druid-azure-extensions|Microsoft Azure deep storage.|[link](../development/extensions-contrib/azure.html)|
+|druid-bitmap-aggregation|Bitmap aggregations and filters.|[link](../development/extensions-contrib/bitmap-aggregation.html)|
 |druid-cassandra-storage|Apache Cassandra deep storage.|[link](../development/extensions-contrib/cassandra.html)|
 |druid-cloudfiles-extensions|Rackspace Cloudfiles deep storage and firehose.|[link](../development/extensions-contrib/cloudfiles.html)|
 |druid-distinctcount|DistinctCount aggregator|[link](../development/extensions-contrib/distinctcount.html)|

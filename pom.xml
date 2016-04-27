@@ -95,6 +95,7 @@
         <module>extensions-core/s3-extensions</module>
         <!-- Community extensions -->
         <module>extensions-contrib/azure-extensions</module>
+        <module>extensions-contrib/bitmap-aggregation</module>
         <module>extensions-contrib/cassandra-storage</module>
         <module>extensions-contrib/druid-rocketmq</module>
         <module>extensions-contrib/cloudfiles-extensions</module>
