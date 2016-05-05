@@ -79,7 +79,6 @@
         <module>server</module>
         <module>services</module>
         <module>integration-tests</module>
-        <module>benchmarks</module>
         <module>aws-common</module>
         <!-- Core extensions -->
         <module>extensions-core/avro-extensions</module>
@@ -104,7 +103,10 @@
         <module>extensions-contrib/rabbitmq</module>
         <module>extensions-contrib/distinctcount</module>
         <module>extensions-contrib/parquet-extensions</module>
-	<module>extensions-contrib/statsd-emitter</module>
+	      <module>extensions-contrib/statsd-emitter</module>
+
+        <!-- benchmarks after extensions, to allow us to benchmark extensions -->
+        <module>benchmarks</module>
 
         <!-- distribution packaging -->
         <module>distribution</module>
