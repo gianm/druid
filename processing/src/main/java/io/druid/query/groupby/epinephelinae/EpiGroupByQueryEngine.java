@@ -20,6 +20,7 @@
 package io.druid.query.groupby.epinephelinae;
 
 import com.google.common.base.Function;
+import com.google.common.base.Strings;
 import com.google.common.base.Throwables;
 import com.google.common.collect.Iterators;
 import com.google.common.collect.Maps;
@@ -86,6 +87,12 @@ public class EpiGroupByQueryEngine
     final Grouper.KeySerde<ByteBuffer> keySerde = new GroupByEngineKeySerde(query.getDimensions().size());
     final ResourceHolder<ByteBuffer> bufferHolder = intermediateResultsBufferPool.take();
 
+    final String fudgeTimestampString = Strings.emptyToNull(
+        query.getContextValue(EpiGroupByStrategy.CTX_KEY_FUDGE_TIMESTAMP, "")
+    );
+
+    final Long fudgeTimestamp = fudgeTimestampString == null ? null : Long.parseLong(fudgeTimestampString);
+
     return Sequences.concat(
         Sequences.withBaggage(
             Sequences.map(
@@ -119,7 +126,10 @@ public class EpiGroupByQueryEngine
                             final IndexedInts[] valuess = new IndexedInts[selectors.length];
 
                             // Time is the same for every row in the cursor
-                            keyBuffer.putLong(0, cursor.getTime().getMillis());
+                            keyBuffer.putLong(
+                                0,
+                                fudgeTimestamp != null ? fudgeTimestamp : cursor.getTime().getMillis()
+                            );
 
                             while (!cursor.isDone()) {
                               int stackp = stack.length - 1;

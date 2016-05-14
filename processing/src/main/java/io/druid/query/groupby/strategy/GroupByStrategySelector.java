@@ -24,12 +24,13 @@ import com.google.inject.Inject;
 import com.metamx.common.ISE;
 import io.druid.query.groupby.GroupByQuery;
 import io.druid.query.groupby.GroupByQueryConfig;
+import io.druid.query.groupby.epinephelinae.EpiGroupByStrategy;
 
 public class GroupByStrategySelector
 {
-  private static final String CTX_KEY_STRATEGY = "groupByStrategy";
-  private static final String STRATEGY_EPINEPHELINAE = "epinephelinae";
-  private static final String STRATEGY_OLD_FAITHFUL = "oldFaithful";
+  public static final String CTX_KEY_STRATEGY = "groupByStrategy";
+  public static final String STRATEGY_EPINEPHELINAE = "epinephelinae";
+  public static final String STRATEGY_OLD_FAITHFUL = "oldFaithful";
 
   private final GroupByQueryConfig config;
   private final OldFaithfulGroupByStrategy oldFaithful;

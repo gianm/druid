@@ -104,6 +104,13 @@ public interface Grouper<KeyType>
 
     T fromByteBuffer(ByteBuffer buffer, int position);
 
+    /**
+     * Guaranteed to not be called unless "iterator" is called on the Grouper. In particular, this means it is
+     * safe to implement the comparator assuming that no further writes will be done unless there is a call
+     * to {@link #reset()}.
+     *
+     * @return comparator for keys
+     */
     KeyComparator comparator();
   }
 

@@ -100,7 +100,8 @@ public class OldFaithfulGroupByStrategy implements GroupByStrategy
                     GroupByQueryHelper.CTX_KEY_SORT_RESULTS, false,
                     //no merging needed at historicals because GroupByQueryRunnerFactory.mergeRunners(..) would return
                     //merged results
-                    GroupByQueryQueryToolChest.GROUP_BY_MERGE_KEY, false
+                    GroupByQueryQueryToolChest.GROUP_BY_MERGE_KEY, false,
+                    GroupByStrategySelector.CTX_KEY_STRATEGY, GroupByStrategySelector.STRATEGY_OLD_FAITHFUL
                 )
             ),
             responseContext

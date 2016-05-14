@@ -85,7 +85,7 @@ import io.druid.query.groupby.having.OrHavingSpec;
 import io.druid.query.groupby.orderby.DefaultLimitSpec;
 import io.druid.query.groupby.orderby.LimitSpec;
 import io.druid.query.groupby.orderby.OrderByColumnSpec;
-import io.druid.query.groupby.strategy.EpiGroupByStrategy;
+import io.druid.query.groupby.epinephelinae.EpiGroupByStrategy;
 import io.druid.query.groupby.strategy.GroupByStrategySelector;
 import io.druid.query.groupby.strategy.OldFaithfulGroupByStrategy;
 import io.druid.query.lookup.LookupExtractionFn;

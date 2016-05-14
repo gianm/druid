@@ -225,6 +225,7 @@ public class GroupByQuery extends BaseQuery<Row>
   public Ordering getResultOrdering()
   {
     final Comparator naturalNullsFirst = Ordering.natural().nullsFirst();
+    final Ordering<Row> rowOrdering = getRowOrdering(false);
 
     return Ordering.from(
         new Comparator<Object>()
@@ -233,32 +234,55 @@ public class GroupByQuery extends BaseQuery<Row>
           public int compare(Object lhs, Object rhs)
           {
             if (lhs instanceof Row) {
-              final Row lhsRow = (Row) lhs;
-              final Row rhsRow = (Row) rhs;
-
-              final int timeCompare = Longs.compare(
-                  granularity.truncate(lhsRow.getTimestampFromEpoch()),
-                  granularity.truncate(rhsRow.getTimestampFromEpoch())
-              );
-              if (timeCompare != 0) {
-                return timeCompare;
-              }
-
-              for (DimensionSpec dimension : dimensions) {
-                final int dimCompare = naturalNullsFirst.compare(
-                    lhsRow.getRaw(dimension.getOutputName()),
-                    rhsRow.getRaw(dimension.getOutputName())
-                );
-                if (dimCompare != 0) {
-                  return dimCompare;
-                }
-              }
-
-              return 0;
+              return rowOrdering.compare((Row) lhs, (Row) rhs);
             } else {
               // Probably bySegment queries
               return naturalNullsFirst.compare(lhs, rhs);
             }
+          }
+        }
+    );
+  }
+
+  public Ordering<Row> getRowOrdering(final boolean granular)
+  {
+    final Comparator naturalNullsFirst = Ordering.natural().nullsFirst();
+
+    return Ordering.from(
+        new Comparator<Row>()
+        {
+          @Override
+          public int compare(Row lhs, Row rhs)
+          {
+            final int timeCompare;
+
+            if (granular) {
+              timeCompare = Longs.compare(
+                  granularity.truncate(lhs.getTimestampFromEpoch()),
+                  granularity.truncate(rhs.getTimestampFromEpoch())
+              );
+            } else {
+              timeCompare = Longs.compare(
+                  lhs.getTimestampFromEpoch(),
+                  rhs.getTimestampFromEpoch()
+              );
+            }
+
+            if (timeCompare != 0) {
+              return timeCompare;
+            }
+
+            for (DimensionSpec dimension : dimensions) {
+              final int dimCompare = naturalNullsFirst.compare(
+                  lhs.getRaw(dimension.getOutputName()),
+                  rhs.getRaw(dimension.getOutputName())
+              );
+              if (dimCompare != 0) {
+                return dimCompare;
+              }
+            }
+
+            return 0;
           }
         }
     );
