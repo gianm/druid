@@ -17,48 +17,18 @@
  * under the License.
  */
 
-package io.druid.query.groupby;
+package io.druid.guice.annotations;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
+import com.google.inject.BindingAnnotation;
 
-/**
- */
-public class GroupByQueryConfig
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+
+@BindingAnnotation
+@Target({ElementType.FIELD, ElementType.PARAMETER, ElementType.METHOD})
+@Retention(RetentionPolicy.RUNTIME)
+public @interface Merging
 {
-  @JsonProperty
-  private boolean singleThreaded = false;
-
-  @JsonProperty
-  private String defaultStrategy = "oldFaithful";
-
-  @JsonProperty
-  private int maxIntermediateRows = 50000;
-
-  @JsonProperty
-  private int maxResults = 500000;
-
-  public boolean isSingleThreaded()
-  {
-    return singleThreaded;
-  }
-
-  public String getDefaultStrategy()
-  {
-    return defaultStrategy;
-  }
-
-  public int getMaxIntermediateRows()
-  {
-    return maxIntermediateRows;
-  }
-
-  public void setMaxIntermediateRows(int maxIntermediateRows)
-  {
-    this.maxIntermediateRows = maxIntermediateRows;
-  }
-
-  public int getMaxResults()
-  {
-    return maxResults;
-  }
 }

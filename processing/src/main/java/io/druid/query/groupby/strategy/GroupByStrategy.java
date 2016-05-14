@@ -17,48 +17,32 @@
  * under the License.
  */
 
-package io.druid.query.groupby;
+package io.druid.query.groupby.strategy;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
+import com.google.common.util.concurrent.ListeningExecutorService;
+import com.metamx.common.guava.Sequence;
+import io.druid.data.input.Row;
+import io.druid.query.QueryRunner;
+import io.druid.query.groupby.GroupByQuery;
+import io.druid.segment.StorageAdapter;
 
-/**
- */
-public class GroupByQueryConfig
+import java.util.Map;
+
+public interface GroupByStrategy
 {
-  @JsonProperty
-  private boolean singleThreaded = false;
+  Sequence<Row> mergeResults(
+      QueryRunner<Row> baseRunner,
+      GroupByQuery query,
+      Map<String, Object> responseContext
+  );
 
-  @JsonProperty
-  private String defaultStrategy = "oldFaithful";
+  QueryRunner<Row> mergeRunners(
+      ListeningExecutorService exec,
+      Iterable<QueryRunner<Row>> queryRunners
+  );
 
-  @JsonProperty
-  private int maxIntermediateRows = 50000;
-
-  @JsonProperty
-  private int maxResults = 500000;
-
-  public boolean isSingleThreaded()
-  {
-    return singleThreaded;
-  }
-
-  public String getDefaultStrategy()
-  {
-    return defaultStrategy;
-  }
-
-  public int getMaxIntermediateRows()
-  {
-    return maxIntermediateRows;
-  }
-
-  public void setMaxIntermediateRows(int maxIntermediateRows)
-  {
-    this.maxIntermediateRows = maxIntermediateRows;
-  }
-
-  public int getMaxResults()
-  {
-    return maxResults;
-  }
+  Sequence<Row> process(
+      GroupByQuery query,
+      StorageAdapter storageAdapter
+  );
 }

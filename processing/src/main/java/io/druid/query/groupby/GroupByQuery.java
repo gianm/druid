@@ -27,6 +27,8 @@ import com.google.common.base.Preconditions;
 import com.google.common.base.Predicate;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
+import com.google.common.collect.Ordering;
+import com.google.common.primitives.Longs;
 import com.metamx.common.ISE;
 import com.metamx.common.guava.Sequence;
 import com.metamx.common.guava.Sequences;
@@ -52,6 +54,7 @@ import io.druid.query.spec.LegacySegmentSpec;
 import io.druid.query.spec.QuerySegmentSpec;
 import org.joda.time.Interval;
 
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 
@@ -216,6 +219,49 @@ public class GroupByQuery extends BaseQuery<Row>
   public String getType()
   {
     return GROUP_BY;
+  }
+
+  @Override
+  public Ordering getResultOrdering()
+  {
+    final Comparator naturalNullsFirst = Ordering.natural().nullsFirst();
+
+    return Ordering.from(
+        new Comparator<Object>()
+        {
+          @Override
+          public int compare(Object lhs, Object rhs)
+          {
+            if (lhs instanceof Row) {
+              final Row lhsRow = (Row) lhs;
+              final Row rhsRow = (Row) rhs;
+
+              final int timeCompare = Longs.compare(
+                  granularity.truncate(lhsRow.getTimestampFromEpoch()),
+                  granularity.truncate(rhsRow.getTimestampFromEpoch())
+              );
+              if (timeCompare != 0) {
+                return timeCompare;
+              }
+
+              for (DimensionSpec dimension : dimensions) {
+                final int dimCompare = naturalNullsFirst.compare(
+                    lhsRow.getRaw(dimension.getOutputName()),
+                    rhsRow.getRaw(dimension.getOutputName())
+                );
+                if (dimCompare != 0) {
+                  return dimCompare;
+                }
+              }
+
+              return 0;
+            } else {
+              // Probably bySegment queries
+              return naturalNullsFirst.compare(lhs, rhs);
+            }
+          }
+        }
+    );
   }
 
   public Sequence<Row> applyLimit(Sequence<Row> results)

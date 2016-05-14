@@ -1053,7 +1053,7 @@ public abstract class IncrementalIndex<AggregatorType> implements Iterable<Row>,
     public SortedDimLookup sort();
   }
 
-  static interface SortedDimLookup<T extends Comparable<? super T>>
+  public static interface SortedDimLookup<T extends Comparable<? super T>>
   {
     public int size();
 
@@ -1119,7 +1119,7 @@ public abstract class IncrementalIndex<AggregatorType> implements Iterable<Row>,
     }
 
     @Override
-    public SortedDimLookup sort()
+    public SortedDimLookup<String> sort()
     {
       return new NullValueConverterDimLookup(delegate.sort());
     }

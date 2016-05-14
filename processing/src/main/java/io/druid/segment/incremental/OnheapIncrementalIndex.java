@@ -303,7 +303,7 @@ public class OnheapIncrementalIndex extends IncrementalIndex<Aggregator>
     }
   }
 
-  static class OnHeapDimDim<T extends Comparable<? super T>> implements DimDim<T>
+  public static class OnHeapDimDim<T extends Comparable<? super T>> implements DimDim<T>
   {
     private final Map<T, Integer> valueToId = Maps.newHashMap();
     private T minValue = null;
@@ -374,10 +374,10 @@ public class OnheapIncrementalIndex extends IncrementalIndex<Aggregator>
       return maxValue;
     }
 
-    public OnHeapDimLookup sort()
+    public OnHeapDimLookup<T> sort()
     {
       synchronized (lock) {
-        return new OnHeapDimLookup(idToValue, size());
+        return new OnHeapDimLookup<>(idToValue, size());
       }
     }
   }
