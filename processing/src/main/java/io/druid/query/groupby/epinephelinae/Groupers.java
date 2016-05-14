@@ -20,18 +20,13 @@
 package io.druid.query.groupby.epinephelinae;
 
 import com.google.common.collect.Iterators;
-import com.google.common.hash.HashFunction;
-import com.google.common.hash.Hashing;
 
-import java.io.Closeable;
 import java.nio.ByteBuffer;
 import java.util.Comparator;
 import java.util.Iterator;
 
 public class Groupers
 {
-  private static final HashFunction HASH_FUNCTION = Hashing.murmur3_32();
-
   private Groupers()
   {
     // No instantiation
@@ -39,15 +34,9 @@ public class Groupers
 
   public static int hash(final ByteBuffer keyBuffer)
   {
-    if (!keyBuffer.hasArray()) {
-      throw new IllegalArgumentException("expected array-backed key");
-    }
-
-    return HASH_FUNCTION.hashBytes(
-        keyBuffer.array(),
-        keyBuffer.arrayOffset() + keyBuffer.position(),
-        keyBuffer.remaining()
-    ).asInt();
+    // Similar to what the built-in HashMap does.
+    final int h = keyBuffer.hashCode();
+    return h ^ (h >>> 16);
   }
 
   public static <KeyType> Iterator<Grouper.Entry<KeyType>> mergeIterators(
