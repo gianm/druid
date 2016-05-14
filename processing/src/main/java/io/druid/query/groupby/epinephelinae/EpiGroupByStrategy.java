@@ -23,10 +23,12 @@ import com.google.common.base.Function;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Maps;
+import com.google.common.collect.Ordering;
 import com.google.common.util.concurrent.ListeningExecutorService;
 import com.google.inject.Inject;
 import com.metamx.common.guava.Sequence;
 import com.metamx.common.guava.Sequences;
+import com.metamx.common.guava.nary.BinaryFn;
 import io.druid.collections.BlockingPool;
 import io.druid.collections.StupidPool;
 import io.druid.data.input.MapBasedRow;
@@ -35,6 +37,7 @@ import io.druid.granularity.AllGranularity;
 import io.druid.granularity.QueryGranularity;
 import io.druid.guice.annotations.Global;
 import io.druid.guice.annotations.Merging;
+import io.druid.query.Query;
 import io.druid.query.QueryRunner;
 import io.druid.query.QueryWatcher;
 import io.druid.query.ResultMergeQueryRunner;
@@ -75,7 +78,20 @@ public class EpiGroupByStrategy implements GroupByStrategy
       final Map<String, Object> responseContext
   )
   {
-    final ResultMergeQueryRunner<Row> mergingQueryRunner = new EpiGroupByStreamMergingQueryRunner(baseRunner);
+    final ResultMergeQueryRunner<Row> mergingQueryRunner = new ResultMergeQueryRunner<Row>(baseRunner)
+    {
+      @Override
+      protected Ordering<Row> makeOrdering(Query<Row> queryParam)
+      {
+        return ((GroupByQuery) queryParam).getRowOrdering(true);
+      }
+
+      @Override
+      protected BinaryFn<Row, Row, Row> createMergeFn(Query<Row> queryParam)
+      {
+        return new EpiGroupByBinaryFn((GroupByQuery) queryParam);
+      }
+    };
 
     // Fudge timestamp, maybe. Necessary to keep timestamps in sync across partial queries.
     final QueryGranularity gran = query.getGranularity();
@@ -86,7 +102,7 @@ public class EpiGroupByStrategy implements GroupByStrategy
           new DateTime(gran.iterable(timeStart, timeStart + 1).iterator().next()).getMillis()
       );
     } else {
-      fudgeTimestamp = "";
+      fudgeTimestamp = query.getContextValue(CTX_KEY_FUDGE_TIMESTAMP, "");
     }
 
     return query.applyLimit(

@@ -46,6 +46,7 @@ import io.druid.segment.data.IndexedInts;
 import io.druid.segment.filter.Filters;
 import org.joda.time.Interval;
 
+import javax.annotation.Nullable;
 import java.io.Closeable;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -103,10 +104,10 @@ public class EpiGroupByQueryEngine
                   public Sequence<Row> apply(final Cursor cursor)
                   {
                     return new BaseSequence<>(
-                        new BaseSequence.IteratorMaker<Row, CloseableIterator<Row>>()
+                        new BaseSequence.IteratorMaker<Row, CloseableGrouperIterator<ByteBuffer, Row>>()
                         {
                           @Override
-                          public CloseableIterator<Row> make()
+                          public CloseableGrouperIterator<ByteBuffer, Row> make()
                           {
                             final Grouper<ByteBuffer> grouper = new BufferGrouper<>(
                                 bufferHolder.get(),
@@ -194,12 +195,12 @@ public class EpiGroupByQueryEngine
                               cursor.advance();
                             }
 
-                            final Iterator<Row> baseIterator = Iterators.transform(
-                                grouper.iterator(true),
+                            return new CloseableGrouperIterator<>(
+                                grouper,
                                 new Function<Grouper.Entry<ByteBuffer>, Row>()
                                 {
                                   @Override
-                                  public Row apply(Grouper.Entry<ByteBuffer> entry)
+                                  public Row apply(final Grouper.Entry<ByteBuffer> entry)
                                   {
                                     Map<String, Object> theMap = Maps.newHashMap();
 
@@ -225,46 +226,15 @@ public class EpiGroupByQueryEngine
                                         theMap
                                     );
                                   }
-                                }
+                                },
+                                true
                             );
-
-                            return new CloseableIterator<Row>()
-                            {
-                              @Override
-                              public boolean hasNext()
-                              {
-                                return baseIterator.hasNext();
-                              }
-
-                              @Override
-                              public Row next()
-                              {
-                                return baseIterator.next();
-                              }
-
-                              @Override
-                              public void remove()
-                              {
-                                baseIterator.remove();
-                              }
-
-                              @Override
-                              public void close() throws IOException
-                              {
-                                grouper.close();
-                              }
-                            };
                           }
 
                           @Override
-                          public void cleanup(CloseableIterator<Row> iterFromMake)
+                          public void cleanup(CloseableGrouperIterator iterFromMake)
                           {
-                            try {
-                              iterFromMake.close();
-                            }
-                            catch (IOException e) {
-                              throw Throwables.propagate(e);
-                            }
+                            iterFromMake.close();
                           }
                         }
                     );
