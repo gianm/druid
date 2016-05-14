@@ -21,8 +21,6 @@ package io.druid.query.groupby.epinephelinae;
 
 import com.google.common.base.Function;
 import com.google.common.base.Strings;
-import com.google.common.base.Throwables;
-import com.google.common.collect.Iterators;
 import com.google.common.collect.Maps;
 import com.google.common.primitives.Ints;
 import com.google.common.primitives.Longs;
@@ -32,7 +30,6 @@ import com.metamx.common.guava.BaseSequence;
 import com.metamx.common.guava.CloseQuietly;
 import com.metamx.common.guava.Sequence;
 import com.metamx.common.guava.Sequences;
-import com.metamx.common.parsers.CloseableIterator;
 import io.druid.collections.ResourceHolder;
 import io.druid.collections.StupidPool;
 import io.druid.data.input.MapBasedRow;
@@ -42,15 +39,14 @@ import io.druid.query.groupby.GroupByQuery;
 import io.druid.segment.Cursor;
 import io.druid.segment.DimensionSelector;
 import io.druid.segment.StorageAdapter;
+import io.druid.segment.data.EmptyIndexedInts;
 import io.druid.segment.data.IndexedInts;
 import io.druid.segment.filter.Filters;
 import org.joda.time.Interval;
 
-import javax.annotation.Nullable;
 import java.io.Closeable;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
@@ -136,13 +132,15 @@ public class EpiGroupByQueryEngine
                               int stackp = stack.length - 1;
 
                               for (int i = 0; i < selectors.length; i++) {
-                                valuess[i] = selectors[i].getRow();
+                                final DimensionSelector selector = selectors[i];
+
+                                valuess[i] = selector == null ? EmptyIndexedInts.EMPTY_INDEXED_INTS : selector.getRow();
 
                                 // Set up first grouping
                                 final int position = Longs.BYTES + Ints.BYTES * i;
                                 if (valuess[i].size() == 0) {
                                   stack[i] = 0;
-                                  keyBuffer.putInt(position, selectors[i].getValueCardinality());
+                                  keyBuffer.putInt(position, -1);
                                 } else {
                                   stack[i] = 1;
                                   keyBuffer.putInt(position, valuess[i].get(0));
