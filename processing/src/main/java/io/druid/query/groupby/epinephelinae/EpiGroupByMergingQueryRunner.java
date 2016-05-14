@@ -113,9 +113,6 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
     final GroupByMergingKeySerde keySerde = new GroupByMergingKeySerde(query.getDimensions().size());
     final GroupByMergingColumnSelectorFactory columnSelectorFactory = new GroupByMergingColumnSelectorFactory();
 
-    // TODO(gianm): Close grouper when done
-    final int totalBufferSize = 1 * 1024 * 1024;
-
     // TODO(gianm): get concurrency level from processing thread pool size
     final int concurrencyHint = 16;
 
@@ -334,6 +331,7 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
     private final int dimCount;
     private final int keySize;
     private final ThreadLocal<ByteBuffer> threadLocalKeyBuffer;
+    private IncrementalIndex.SortedDimLookup<String> sortedDimDim = null;
 
     public GroupByMergingKeySerde(final int dimCount)
     {
@@ -383,9 +381,11 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
     @Override
     public Grouper.KeyComparator comparator()
     {
-      // TODO(gianm): Document why this is okay (comparator not being used while writes are occurring)
+      // Not OK to continue adding after comparator is pulled out (even with reset) but that's fine; we don't do that.
 
-      final IncrementalIndex.SortedDimLookup<String> sortedDimDim = dimDim.sort();
+      if (sortedDimDim == null) {
+        sortedDimDim = dimDim.sort();
+      }
 
       return new Grouper.KeyComparator()
       {

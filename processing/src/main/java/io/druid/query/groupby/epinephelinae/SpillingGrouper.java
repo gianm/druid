@@ -146,19 +146,18 @@ public class SpillingGrouper<KeyType> implements Grouper<KeyType>
   {
     final File file = files.get(fileNum);
 
-    MappedByteBuffer mmap = mmaps.get(fileNum);
-
-    if (mmap == null) {
-      try {
-        mmap = Files.map(file, FileChannel.MapMode.READ_ONLY);
-        mmaps.add(fileNum, mmap);
-      }
-      catch (IOException e) {
-        throw Throwables.propagate(e);
+    if (mmaps.size() < fileNum + 1) {
+      for (int i = mmaps.size(); i <= fileNum; i++) {
+        try {
+          mmaps.add(Files.map(file, FileChannel.MapMode.READ_ONLY));
+        }
+        catch (IOException e) {
+          throw Throwables.propagate(e);
+        }
       }
     }
 
-    final MappedByteBuffer mmap2 = mmap;
+    final MappedByteBuffer mmap = mmaps.get(fileNum);
 
     return new Iterator<Entry<KeyType>>()
     {
@@ -167,13 +166,13 @@ public class SpillingGrouper<KeyType> implements Grouper<KeyType>
       @Override
       public boolean hasNext()
       {
-        return position < mmap2.capacity();
+        return position < mmap.capacity();
       }
 
       @Override
       public Entry<KeyType> next()
       {
-        final ByteBuffer entryBuffer = mmap2.duplicate();
+        final ByteBuffer entryBuffer = mmap.duplicate();
         entryBuffer.position(position);
         entryBuffer.limit(position + grouper.getEntryBufferSize());
         position += grouper.getEntryBufferSize();

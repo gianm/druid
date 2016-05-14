@@ -36,6 +36,7 @@ import io.druid.data.input.Row;
 import io.druid.query.aggregation.AggregatorFactory;
 import io.druid.query.aggregation.PostAggregator;
 import io.druid.query.dimension.DimensionSpec;
+import io.druid.query.ordering.StringComparators;
 import io.druid.query.ordering.StringComparators.StringComparator;
 
 import javax.annotation.Nullable;
@@ -83,7 +84,26 @@ public class DefaultLimitSpec implements LimitSpec
       List<DimensionSpec> dimensions, List<AggregatorFactory> aggs, List<PostAggregator> postAggs
   )
   {
-    if (columns.isEmpty()) {
+    // Can avoid materialization if the natural ordering is good enough.
+
+    boolean materializationNeeded = false;
+
+    if (dimensions.size() < columns.size()) {
+      materializationNeeded = true;
+    } else {
+      for (int i = 0; i < columns.size(); i++) {
+        final OrderByColumnSpec columnSpec = columns.get(i);
+
+        if (columnSpec.getDirection() != OrderByColumnSpec.Direction.ASCENDING
+            || !columnSpec.getDimensionComparator().equals(StringComparators.LEXICOGRAPHIC)
+            || !columnSpec.getDimension().equals(dimensions.get(i).getOutputName())) {
+          materializationNeeded = true;
+          break;
+        }
+      }
+    }
+
+    if (!materializationNeeded) {
       return new LimitingFn(limit);
     }
 
