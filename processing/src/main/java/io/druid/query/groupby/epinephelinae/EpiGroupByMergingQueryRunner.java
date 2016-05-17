@@ -447,6 +447,7 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
     @Override
     public ByteBuffer toByteBuffer(GroupByMergingKey key)
     {
+      // TODO(gianm): Some way of enforcing a max dictionary size (spill when it gets too big)
       keyBuffer.rewind();
       keyBuffer.putLong(key.getTimestamp());
       for (int i = 0; i < key.getDimensions().length; i++) {

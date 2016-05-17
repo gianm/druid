@@ -178,7 +178,7 @@ public class GroupByQueryRunnerTest
               @Override
               public int getNumThreads()
               {
-                return 4;
+                return 1;
               }
             },
             configSupplier,
