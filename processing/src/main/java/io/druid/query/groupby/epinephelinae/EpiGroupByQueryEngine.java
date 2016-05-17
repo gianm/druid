@@ -23,7 +23,6 @@ import com.google.common.base.Function;
 import com.google.common.base.Strings;
 import com.google.common.collect.Maps;
 import com.google.common.primitives.Ints;
-import com.google.common.primitives.Longs;
 import com.metamx.common.IAE;
 import com.metamx.common.ISE;
 import com.metamx.common.guava.BaseSequence;
@@ -43,6 +42,7 @@ import io.druid.segment.StorageAdapter;
 import io.druid.segment.data.EmptyIndexedInts;
 import io.druid.segment.data.IndexedInts;
 import io.druid.segment.filter.Filters;
+import org.joda.time.DateTime;
 import org.joda.time.Interval;
 
 import java.io.Closeable;
@@ -124,10 +124,9 @@ public class EpiGroupByQueryEngine
                             final IndexedInts[] valuess = new IndexedInts[selectors.length];
 
                             // Time is the same for every row in the cursor
-                            keyBuffer.putLong(
-                                0,
-                                fudgeTimestamp != null ? fudgeTimestamp : cursor.getTime().getMillis()
-                            );
+                            final DateTime myTimestamp = fudgeTimestamp != null
+                                                         ? query.getGranularity().toDateTime(fudgeTimestamp)
+                                                         : cursor.getTime();
 
                             while (!cursor.isDone()) {
                               int stackp = stack.length - 1;
@@ -138,7 +137,7 @@ public class EpiGroupByQueryEngine
                                 valuess[i] = selector == null ? EmptyIndexedInts.EMPTY_INDEXED_INTS : selector.getRow();
 
                                 // Set up first grouping
-                                final int position = Longs.BYTES + Ints.BYTES * i;
+                                final int position = Ints.BYTES * i;
                                 if (valuess[i].size() == 0) {
                                   stack[i] = 0;
                                   keyBuffer.putInt(position, -1);
@@ -160,14 +159,14 @@ public class EpiGroupByQueryEngine
                                 if (stack[stackp] < valuess[stackp].size()) {
                                   // Load next value for current slot
                                   keyBuffer.putInt(
-                                      Longs.BYTES + Ints.BYTES * stackp,
+                                      Ints.BYTES * stackp,
                                       valuess[stackp].get(stack[stackp])
                                   );
                                   stack[stackp]++;
 
                                   // Reset later slots
                                   for (int i = stackp + 1; i < stack.length; i++) {
-                                    final int position = Longs.BYTES + Ints.BYTES * i;
+                                    final int position = Ints.BYTES * i;
                                     if (valuess[i].size() == 0) {
                                       stack[i] = 0;
                                       keyBuffer.putInt(position, -1);
@@ -206,7 +205,7 @@ public class EpiGroupByQueryEngine
 
                                     // Add dimensions.
                                     for (int i = 0; i < dimCount; i++) {
-                                      final int id = entry.getKey().getInt(Longs.BYTES + Ints.BYTES * i);
+                                      final int id = entry.getKey().getInt(Ints.BYTES * i);
 
                                       if (id >= 0) {
                                         theMap.put(
@@ -221,10 +220,7 @@ public class EpiGroupByQueryEngine
                                       theMap.put(query.getAggregatorSpecs().get(i).getName(), entry.getValues()[i]);
                                     }
 
-                                    return new MapBasedRow(
-                                        query.getGranularity().toDateTime(entry.getKey().getLong(0)),
-                                        theMap
-                                    );
+                                    return new MapBasedRow(myTimestamp, theMap);
                                   }
                                 }
                             );
@@ -258,7 +254,7 @@ public class EpiGroupByQueryEngine
 
     public GroupByEngineKeySerde(final int dimCount)
     {
-      this.keySize = Longs.BYTES + dimCount * Ints.BYTES;
+      this.keySize = dimCount * Ints.BYTES;
     }
 
     @Override

@@ -43,6 +43,7 @@ import io.druid.jackson.DefaultObjectMapper;
 import io.druid.js.JavaScriptConfig;
 import io.druid.query.BySegmentResultValue;
 import io.druid.query.BySegmentResultValueClass;
+import io.druid.query.DruidProcessingConfig;
 import io.druid.query.Druids;
 import io.druid.query.FinalizeResultsQueryRunner;
 import io.druid.query.Query;
@@ -166,6 +167,20 @@ public class GroupByQueryRunnerTest
             bufferPool
         ),
         new EpiGroupByStrategy(
+            new DruidProcessingConfig()
+            {
+              @Override
+              public String getFormatString()
+              {
+                return null;
+              }
+
+              @Override
+              public int getNumThreads()
+              {
+                return 4;
+              }
+            },
             configSupplier,
             bufferPool,
             mergeBufferPool,

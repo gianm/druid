@@ -85,6 +85,7 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
   private final Iterable<QueryRunner<Row>> queryables;
   private final ListeningExecutorService exec;
   private final QueryWatcher queryWatcher;
+  private final int concurrencyHint;
   private final BlockingPool<ByteBuffer> mergeBufferPool;
   private final ObjectMapper spillMapper;
 
@@ -93,6 +94,7 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
       ExecutorService exec,
       QueryWatcher queryWatcher,
       Iterable<QueryRunner<Row>> queryables,
+      int concurrencyHint,
       BlockingPool<ByteBuffer> mergeBufferPool,
       ObjectMapper spillMapper
   )
@@ -101,6 +103,7 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
     this.exec = MoreExecutors.listeningDecorator(exec);
     this.queryWatcher = queryWatcher;
     this.queryables = Iterables.unmodifiableIterable(Iterables.filter(queryables, Predicates.notNull()));
+    this.concurrencyHint = concurrencyHint;
     this.mergeBufferPool = mergeBufferPool;
     this.spillMapper = spillMapper;
   }
@@ -123,9 +126,6 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
         query.getDimensions().size()
     );
     final GroupByMergingColumnSelectorFactory columnSelectorFactory = new GroupByMergingColumnSelectorFactory();
-
-    // TODO(gianm): get concurrency level from processing thread pool size
-    final int concurrencyHint = 1;
 
     // TODO(gianm): Configurable spill dir
     final File spillDirectory = Files.createTempDir();

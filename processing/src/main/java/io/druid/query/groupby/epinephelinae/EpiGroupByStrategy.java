@@ -40,6 +40,7 @@ import io.druid.granularity.QueryGranularity;
 import io.druid.guice.annotations.Global;
 import io.druid.guice.annotations.Merging;
 import io.druid.guice.annotations.Smile;
+import io.druid.query.DruidProcessingConfig;
 import io.druid.query.Query;
 import io.druid.query.QueryRunner;
 import io.druid.query.QueryWatcher;
@@ -59,6 +60,7 @@ public class EpiGroupByStrategy implements GroupByStrategy
 {
   static final String CTX_KEY_FUDGE_TIMESTAMP = "fudgeTimestamp";
 
+  private final DruidProcessingConfig processingConfig;
   private final Supplier<GroupByQueryConfig> configSupplier;
   private final StupidPool<ByteBuffer> bufferPool;
   private final BlockingPool<ByteBuffer> mergeBufferPool;
@@ -67,6 +69,7 @@ public class EpiGroupByStrategy implements GroupByStrategy
 
   @Inject
   public EpiGroupByStrategy(
+      DruidProcessingConfig processingConfig,
       Supplier<GroupByQueryConfig> configSupplier,
       @Global StupidPool<ByteBuffer> bufferPool,
       @Merging BlockingPool<ByteBuffer> mergeBufferPool,
@@ -74,6 +77,7 @@ public class EpiGroupByStrategy implements GroupByStrategy
       QueryWatcher queryWatcher
   )
   {
+    this.processingConfig = processingConfig;
     this.configSupplier = configSupplier;
     this.bufferPool = bufferPool;
     this.mergeBufferPool = mergeBufferPool;
@@ -182,6 +186,7 @@ public class EpiGroupByStrategy implements GroupByStrategy
         exec,
         queryWatcher,
         queryRunners,
+        processingConfig.getNumThreads(),
         mergeBufferPool,
         spillMapper
     );
