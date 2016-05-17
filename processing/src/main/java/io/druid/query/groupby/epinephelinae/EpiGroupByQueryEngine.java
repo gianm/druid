@@ -28,6 +28,7 @@ import com.metamx.common.IAE;
 import com.metamx.common.ISE;
 import com.metamx.common.guava.BaseSequence;
 import com.metamx.common.guava.CloseQuietly;
+import com.metamx.common.guava.ResourceClosingSequence;
 import com.metamx.common.guava.Sequence;
 import com.metamx.common.guava.Sequences;
 import io.druid.collections.ResourceHolder;
@@ -91,7 +92,7 @@ public class EpiGroupByQueryEngine
     final Long fudgeTimestamp = fudgeTimestampString == null ? null : Long.parseLong(fudgeTimestampString);
 
     return Sequences.concat(
-        Sequences.withBaggage(
+        new ResourceClosingSequence<>(
             Sequences.map(
                 cursors,
                 new Function<Cursor, Sequence<Row>>()
@@ -195,6 +196,7 @@ public class EpiGroupByQueryEngine
 
                             return new CloseableGrouperIterator<>(
                                 grouper,
+                                false,
                                 new Function<Grouper.Entry<ByteBuffer>, Row>()
                                 {
                                   @Override
@@ -224,8 +226,7 @@ public class EpiGroupByQueryEngine
                                         theMap
                                     );
                                   }
-                                },
-                                true
+                                }
                             );
                           }
 
@@ -267,6 +268,12 @@ public class EpiGroupByQueryEngine
     }
 
     @Override
+    public Class<ByteBuffer> keyClazz()
+    {
+      return ByteBuffer.class;
+    }
+
+    @Override
     public ByteBuffer toByteBuffer(ByteBuffer key)
     {
       return key;
@@ -285,6 +292,12 @@ public class EpiGroupByQueryEngine
     {
       // No sorting, let mergeRunners handle that
       return null;
+    }
+
+    @Override
+    public void reset()
+    {
+      // No state, nothing to reset
     }
   }
 }

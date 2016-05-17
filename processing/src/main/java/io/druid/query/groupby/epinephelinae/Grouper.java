@@ -19,22 +19,23 @@
 
 package io.druid.query.groupby.epinephelinae;
 
-import com.google.common.base.Preconditions;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.nio.ByteBuffer;
 import java.util.Iterator;
 
-public interface Grouper<KeyType>
+public interface Grouper<KeyType extends Comparable<KeyType>>
 {
   /**
    * Aggregate the current row with the provided key. May or may not be thread-safe.
    *
-   * @param key     key bytebuffer
-   * @param keyHash hash of the key, identical to the hash that {@link #aggregate(Object)} would have used
+   * @param key     key object
+   * @param keyHash result of {@link Groupers#hash(Object)} on the key
    *
    * @return true if the row was aggregated, false if not due to hitting maxSize
    */
-  boolean aggregate(ByteBuffer key, int keyHash);
+  boolean aggregate(KeyType key, int keyHash);
 
   /**
    * Aggregate the current row with the provided key. May or may not be thread-safe.
@@ -61,57 +62,95 @@ public interface Grouper<KeyType>
    * method, you should either call {@link #close()} (if you are done with the Grouper) or {@link #reset()} (if you
    * want to reuse it).
    *
-   * @param deserialize if true, populate the "key" and "values" of the returned entries.
+   * If "sorted" is true then the iterator will return sorted results. It will use KeyType's natural ordering on
+   * deserialized objects, and will use the {@link KeySerde#comparator()} on serialized objects. Woe be unto you
+   * if these comparators are not equivalent.
+   *
+   * @param sorted return sorted results
    *
    * @return entry iterator
    */
-  Iterator<Entry<KeyType>> iterator(boolean deserialize);
+  Iterator<Entry<KeyType>> iterator(final boolean sorted);
 
   class Entry<T>
   {
-    private final ByteBuffer buffer;
-    private final T key;
-    private final Object[] values;
+    final T key;
+    final Object[] values;
 
-    public Entry(ByteBuffer buffer, T key, Object[] values)
+    @JsonCreator
+    public Entry(
+        @JsonProperty("k") T key,
+        @JsonProperty("v") Object[] values
+    )
     {
-      this.buffer = Preconditions.checkNotNull(buffer, "buffer");
       this.key = key;
       this.values = values;
     }
 
-    public ByteBuffer getBuffer()
-    {
-      return buffer;
-    }
-
+    @JsonProperty("k")
     public T getKey()
     {
       return key;
     }
 
+    @JsonProperty("v")
     public Object[] getValues()
     {
       return values;
     }
   }
 
+  interface KeySerdeFactory<T>
+  {
+    KeySerde<T> factorize();
+  }
+
   interface KeySerde<T>
   {
+    /**
+     * Size of the keys returned by {@link #toByteBuffer(Object)} (which must be a fixed size)
+     */
     int keySize();
 
+    /**
+     * Class of the keys.
+     */
+    Class<T> keyClazz();
+
+    /**
+     * Serialize a key. This will be called by the {@link #aggregate(Comparable)} method. The buffer will not
+     * be retained after the aggregate method returns, so reusing buffers is OK.
+     *
+     * @param key key object
+     *
+     * @return serialized key
+     */
     ByteBuffer toByteBuffer(T key);
 
+    /**
+     * Deserialize a key from a buffer. Will be called by the {@link #iterator(boolean)} method.
+     *
+     * @param buffer   buffer containing the key
+     * @param position key start position in the buffer
+     *
+     * @return key object
+     */
     T fromByteBuffer(ByteBuffer buffer, int position);
 
     /**
-     * Guaranteed to not be called unless "iterator" is called on the Grouper. In particular, this means it is
-     * safe to implement the comparator assuming that no further writes will be done unless there is a call
-     * to {@link #reset()}.
+     * Return an object that knows how to compare two serialized keys. Will be called by the
+     * {@link #iterator(boolean)} method if sorting is enabled.
      *
      * @return comparator for keys
      */
     KeyComparator comparator();
+
+    /**
+     * Reset the keySerde to its initial state. After this method is called, it's okay for
+     * {@link #fromByteBuffer(ByteBuffer, int)} and {@link #comparator()} to no longer work properly on
+     * previously-serialized keys.
+     */
+    void reset();
   }
 
   interface KeyComparator

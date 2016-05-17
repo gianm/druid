@@ -20,6 +20,7 @@
 package io.druid.query.groupby.epinephelinae;
 
 import com.google.common.base.Preconditions;
+import com.google.common.primitives.Ints;
 import com.metamx.common.IAE;
 import io.druid.query.aggregation.AggregatorFactory;
 import io.druid.query.aggregation.BufferAggregator;
@@ -30,7 +31,7 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Iterator;
 
-public class BufferGrouper<KeyType> implements Grouper<KeyType>
+public class BufferGrouper<KeyType extends Comparable<KeyType>> implements Grouper<KeyType>
 {
   private static final float MAX_LOAD_FACTOR = 0.75f;
 
@@ -42,6 +43,7 @@ public class BufferGrouper<KeyType> implements Grouper<KeyType>
   private final int bucketSize;
   private final int buckets;
   private final int maxSize;
+  private final int tableEnd;
 
   private int size;
 
@@ -66,21 +68,28 @@ public class BufferGrouper<KeyType> implements Grouper<KeyType>
     }
 
     this.bucketSize = offset;
-    this.buckets = buffer.capacity() / bucketSize;
 
-    if (buffer.capacity() < bucketSize) {
-      throw new IAE("Not enough capacity for even one row! Need[%,d] but have[%,d].", bucketSize, buffer.capacity());
-    } else {
-      this.maxSize = Math.max(1, (int) (buckets * MAX_LOAD_FACTOR));
+    if (buffer.capacity() < bucketSize + Ints.BYTES) {
+      throw new IAE(
+          "Not enough capacity for even one row! Need[%,d] but have[%,d].",
+          bucketSize + Ints.BYTES,
+          buffer.capacity()
+      );
     }
 
-    // The passed-in buffer might have some junk in it; clear that out.
+    this.buckets = buffer.capacity() / (bucketSize + Ints.BYTES);
+    this.maxSize = Math.max(1, (int) (buckets * MAX_LOAD_FACTOR));
+    this.tableEnd = buckets * bucketSize;
+
+    // Clear out any junk in the buffer
     reset();
   }
 
   @Override
-  public boolean aggregate(ByteBuffer keyBuffer, int keyHash)
+  public boolean aggregate(KeyType key, int keyHash)
   {
+    final ByteBuffer keyBuffer = keySerde.toByteBuffer(key);
+
     Preconditions.checkArgument(
         keyBuffer.remaining() == keySize,
         "key size[%s] != keySize[%s]",
@@ -106,6 +115,7 @@ public class BufferGrouper<KeyType> implements Grouper<KeyType>
         aggregators[i].init(buffer, offset + aggregatorOffsets[i]);
       }
 
+      buffer.putInt(tableEnd + size * Ints.BYTES, offset);
       size++;
     }
 
@@ -120,41 +130,34 @@ public class BufferGrouper<KeyType> implements Grouper<KeyType>
   @Override
   public boolean aggregate(final KeyType key)
   {
-    final ByteBuffer keyBuffer = keySerde.toByteBuffer(key);
-    return aggregate(keyBuffer, Groupers.hash(keyBuffer));
+    return aggregate(key, Groupers.hash(key));
   }
 
   @Override
   public void reset()
   {
     for (int i = 0; i < buckets; i++) {
-      setUsed(i, false);
+      buffer.put(i * bucketSize, (byte) 0);
     }
 
     size = 0;
+    keySerde.reset();
   }
 
   @Override
-  public Iterator<Entry<KeyType>> iterator(final boolean deserialize)
+  public Iterator<Entry<KeyType>> iterator(final boolean sorted)
   {
     final KeyComparator comparator = keySerde.comparator();
 
-    if (comparator != null) {
-      // Sorted iterator
-
-      // TODO(gianm): Avoid on-heap "sorted" array by storing it in the buffer
-      final Integer[] sorted = new Integer[size];
-      int entry = 0;
-      int offset = 0;
-      for (int bucket = 0; bucket < this.buckets; bucket++) {
-        if (buffer.get(offset) == 1) {
-          sorted[entry++] = bucket;
-        }
-        offset += bucketSize;
+    if (sorted) {
+      // TODO(gianm): Sort offsets array in-place?
+      final Integer[] offsets = new Integer[size];
+      for (int i = 0; i < size; i++) {
+        offsets[i] = buffer.getInt(tableEnd + i * Ints.BYTES);
       }
 
       Arrays.sort(
-          sorted,
+          offsets,
           new Comparator<Integer>()
           {
             @Override
@@ -163,8 +166,8 @@ public class BufferGrouper<KeyType> implements Grouper<KeyType>
               return comparator.compare(
                   buffer,
                   buffer,
-                  lhs * bucketSize + 1,
-                  rhs * bucketSize + 1
+                  lhs + 1,
+                  rhs + 1
               );
             }
           }
@@ -177,13 +180,13 @@ public class BufferGrouper<KeyType> implements Grouper<KeyType>
         @Override
         public boolean hasNext()
         {
-          return curr < sorted.length;
+          return curr < offsets.length;
         }
 
         @Override
         public Entry<KeyType> next()
         {
-          return bucketEntryForOffset(sorted[curr++] * bucketSize, deserialize);
+          return bucketEntryForOffset(offsets[curr++]);
         }
 
         @Override
@@ -196,25 +199,20 @@ public class BufferGrouper<KeyType> implements Grouper<KeyType>
       // Unsorted iterator
       return new Iterator<Entry<KeyType>>()
       {
-        int returned = 0;
-        int offset = 0;
+        int curr = 0;
 
         @Override
         public boolean hasNext()
         {
-          return returned < size;
+          return curr < size;
         }
 
         @Override
         public Entry<KeyType> next()
         {
-          while (buffer.get(offset) == 0) {
-            offset += bucketSize;
-          }
-
-          final Entry<KeyType> entry = bucketEntryForOffset(offset, deserialize);
-          offset += bucketSize;
-          returned++;
+          final int offset = buffer.getInt(tableEnd + curr * Ints.BYTES);
+          final Entry<KeyType> entry = bucketEntryForOffset(offset);
+          curr++;
 
           return entry;
         }
@@ -241,11 +239,6 @@ public class BufferGrouper<KeyType> implements Grouper<KeyType>
   private boolean isUsed(final int bucket)
   {
     return buffer.get(bucket * bucketSize) == 1;
-  }
-
-  private void setUsed(final int bucket, final boolean used)
-  {
-    buffer.put(bucket * bucketSize, used ? (byte) 1 : (byte) 0);
   }
 
   /**
@@ -292,7 +285,7 @@ outer:
     }
   }
 
-  private Entry<KeyType> bucketEntryForOffset(final int bucketOffset, final boolean deserialize)
+  private Entry<KeyType> bucketEntryForOffset(final int bucketOffset)
   {
     final int keyPosition = bucketOffset + 1;
 
@@ -300,32 +293,17 @@ outer:
     entryBuffer.position(keyPosition);
     entryBuffer.limit(keyPosition + bucketSize - 1);
 
-    return bucketEntryForBuffer(entryBuffer.slice(), deserialize);
+    return bucketEntryForBuffer(entryBuffer.slice());
   }
 
-  // Package-visible for SpillingGrouper
-  int getEntryBufferSize()
+  private Entry<KeyType> bucketEntryForBuffer(final ByteBuffer entryBuffer)
   {
-    return bucketSize - 1;
-  }
-
-  // Package-visible for SpillingGrouper
-  Entry<KeyType> bucketEntryForBuffer(final ByteBuffer entryBuffer, final boolean deserialize)
-  {
-    final KeyType key;
-    final Object[] values;
-
-    if (deserialize) {
-      key = keySerde.fromByteBuffer(entryBuffer, 0);
-      values = new Object[aggregators.length];
-      for (int i = 0; i < aggregators.length; i++) {
-        values[i] = aggregators[i].get(entryBuffer, aggregatorOffsets[i] - 1);
-      }
-    } else {
-      key = null;
-      values = null;
+    final KeyType key = keySerde.fromByteBuffer(entryBuffer, 0);
+    final Object[] values = new Object[aggregators.length];
+    for (int i = 0; i < aggregators.length; i++) {
+      values[i] = aggregators[i].get(entryBuffer, aggregatorOffsets[i] - 1);
     }
 
-    return new Entry<>(entryBuffer, key, values);
+    return new Entry<>(key, values);
   }
 }

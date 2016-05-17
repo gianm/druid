@@ -26,10 +26,10 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 public class GroupByQueryConfig
 {
   @JsonProperty
-  private boolean singleThreaded = false;
+  private String defaultStrategy = "oldFaithful";
 
   @JsonProperty
-  private String defaultStrategy = "oldFaithful";
+  private boolean singleThreaded = false;
 
   @JsonProperty
   private int maxIntermediateRows = 50000;
@@ -37,14 +37,18 @@ public class GroupByQueryConfig
   @JsonProperty
   private int maxResults = 500000;
 
-  public boolean isSingleThreaded()
-  {
-    return singleThreaded;
-  }
+  @JsonProperty
+  // Not worth documenting, only used for tests
+  private int spillEvery = Integer.MAX_VALUE;
 
   public String getDefaultStrategy()
   {
     return defaultStrategy;
+  }
+
+  public boolean isSingleThreaded()
+  {
+    return singleThreaded;
   }
 
   public int getMaxIntermediateRows()
@@ -60,5 +64,10 @@ public class GroupByQueryConfig
   public int getMaxResults()
   {
     return maxResults;
+  }
+
+  public int getSpillEvery()
+  {
+    return spillEvery;
   }
 }

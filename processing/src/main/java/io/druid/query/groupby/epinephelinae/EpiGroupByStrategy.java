@@ -19,7 +19,9 @@
 
 package io.druid.query.groupby.epinephelinae;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Function;
+import com.google.common.base.Supplier;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Maps;
@@ -37,12 +39,14 @@ import io.druid.granularity.AllGranularity;
 import io.druid.granularity.QueryGranularity;
 import io.druid.guice.annotations.Global;
 import io.druid.guice.annotations.Merging;
+import io.druid.guice.annotations.Smile;
 import io.druid.query.Query;
 import io.druid.query.QueryRunner;
 import io.druid.query.QueryWatcher;
 import io.druid.query.ResultMergeQueryRunner;
 import io.druid.query.aggregation.PostAggregator;
 import io.druid.query.groupby.GroupByQuery;
+import io.druid.query.groupby.GroupByQueryConfig;
 import io.druid.query.groupby.strategy.GroupByStrategy;
 import io.druid.query.groupby.strategy.GroupByStrategySelector;
 import io.druid.segment.StorageAdapter;
@@ -55,19 +59,25 @@ public class EpiGroupByStrategy implements GroupByStrategy
 {
   static final String CTX_KEY_FUDGE_TIMESTAMP = "fudgeTimestamp";
 
+  private final Supplier<GroupByQueryConfig> configSupplier;
   private final StupidPool<ByteBuffer> bufferPool;
   private final BlockingPool<ByteBuffer> mergeBufferPool;
+  private final ObjectMapper spillMapper;
   private final QueryWatcher queryWatcher;
 
   @Inject
   public EpiGroupByStrategy(
+      Supplier<GroupByQueryConfig> configSupplier,
       @Global StupidPool<ByteBuffer> bufferPool,
       @Merging BlockingPool<ByteBuffer> mergeBufferPool,
+      @Smile ObjectMapper spillMapper,
       QueryWatcher queryWatcher
   )
   {
+    this.configSupplier = configSupplier;
     this.bufferPool = bufferPool;
     this.mergeBufferPool = mergeBufferPool;
+    this.spillMapper = spillMapper;
     this.queryWatcher = queryWatcher;
   }
 
@@ -166,7 +176,15 @@ public class EpiGroupByStrategy implements GroupByStrategy
       Iterable<QueryRunner<Row>> queryRunners
   )
   {
-    return new EpiGroupByMergingQueryRunner(exec, queryWatcher, queryRunners, mergeBufferPool);
+    // TODO(gianm): get mapper from somewhere real
+    return new EpiGroupByMergingQueryRunner(
+        configSupplier.get(),
+        exec,
+        queryWatcher,
+        queryRunners,
+        mergeBufferPool,
+        spillMapper
+    );
   }
 
   @Override

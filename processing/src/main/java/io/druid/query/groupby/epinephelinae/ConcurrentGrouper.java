@@ -19,6 +19,7 @@
 
 package io.druid.query.groupby.epinephelinae;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.druid.query.aggregation.AggregatorFactory;
 import io.druid.segment.ColumnSelectorFactory;
 
@@ -28,21 +29,21 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 
-public class ConcurrentGrouper<KeyType> implements Grouper<KeyType>
+public class ConcurrentGrouper<KeyType extends Comparable<KeyType>> implements Grouper<KeyType>
 {
   private final List<Grouper<KeyType>> groupers;
-  private final KeySerde<KeyType> keySerde;
 
   public ConcurrentGrouper(
       final ByteBuffer buffer,
       final int concurrencyHint,
       final File spillDirectory,
-      final KeySerde<KeyType> keySerde,
+      final ObjectMapper spillMapper,
+      final int spillEvery,
+      final KeySerdeFactory<KeyType> keySerdeFactory,
       final ColumnSelectorFactory columnSelectorFactory,
       final AggregatorFactory[] aggregatorFactories
   )
   {
-    this.keySerde = keySerde;
     this.groupers = new ArrayList<>(concurrencyHint);
 
     final int sliceSize = (buffer.capacity() / concurrencyHint);
@@ -53,30 +54,35 @@ public class ConcurrentGrouper<KeyType> implements Grouper<KeyType>
       groupers.add(
           new SpillingGrouper<>(
               slice.slice(),
-              keySerde,
+              keySerdeFactory,
               columnSelectorFactory,
               aggregatorFactories,
-              spillDirectory
+              spillDirectory,
+              spillMapper,
+              spillEvery
           )
       );
     }
   }
 
   @Override
-  public boolean aggregate(ByteBuffer keyBuffer, int keyHash)
+  public boolean aggregate(KeyType key, int keyHash)
   {
-    int idx = (keyHash >>> 8) % groupers.size();
-    final Grouper<KeyType> grouper = groupers.get(idx);
+    final Grouper<KeyType> grouper = groupers.get(grouperNumberForKeyHash(keyHash));
     synchronized (grouper) {
-      return grouper.aggregate(keyBuffer, keyHash);
+      return grouper.aggregate(key, keyHash);
     }
   }
 
   @Override
   public boolean aggregate(KeyType key)
   {
-    final ByteBuffer keyBuffer = keySerde.toByteBuffer(key);
-    return aggregate(keyBuffer, Groupers.hash(keyBuffer));
+    final int keyHash = Groupers.hash(key);
+    final int grouperNumber = grouperNumberForKeyHash(keyHash);
+    final Grouper<KeyType> grouper = groupers.get(grouperNumber);
+    synchronized (grouper) {
+      return grouper.aggregate(key, keyHash);
+    }
   }
 
   @Override
@@ -90,17 +96,17 @@ public class ConcurrentGrouper<KeyType> implements Grouper<KeyType>
   }
 
   @Override
-  public Iterator<Entry<KeyType>> iterator(final boolean deserialize)
+  public Iterator<Entry<KeyType>> iterator(final boolean sorted)
   {
     final List<Iterator<Entry<KeyType>>> iterators = new ArrayList<>(groupers.size());
 
     for (Grouper<KeyType> grouper : groupers) {
       synchronized (grouper) {
-        iterators.add(grouper.iterator(deserialize));
+        iterators.add(grouper.iterator(sorted));
       }
     }
 
-    return Groupers.mergeIterators(iterators, keySerde.comparator());
+    return Groupers.mergeIterators(iterators, sorted);
   }
 
   @Override
@@ -111,5 +117,10 @@ public class ConcurrentGrouper<KeyType> implements Grouper<KeyType>
         grouper.close();
       }
     }
+  }
+
+  private int grouperNumberForKeyHash(int keyHash)
+  {
+    return (keyHash >>> 4) % groupers.size();
   }
 }

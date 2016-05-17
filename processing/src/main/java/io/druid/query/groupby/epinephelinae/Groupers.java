@@ -21,50 +21,44 @@ package io.druid.query.groupby.epinephelinae;
 
 import com.google.common.collect.Iterators;
 
-import java.nio.ByteBuffer;
 import java.util.Comparator;
 import java.util.Iterator;
 
 public class Groupers
 {
+  private static final Comparator<Grouper.Entry<? extends Comparable>> ENTRY_COMPARATOR = new Comparator<Grouper.Entry<? extends Comparable>>()
+  {
+    @Override
+    public int compare(
+        final Grouper.Entry<? extends Comparable> lhs,
+        final Grouper.Entry<? extends Comparable> rhs
+    )
+    {
+      return lhs.getKey().compareTo(rhs.getKey());
+    }
+  };
+
   private Groupers()
   {
     // No instantiation
   }
 
-  public static int hash(final ByteBuffer keyBuffer)
+  public static int hash(final Object obj)
   {
     // Similar to what the built-in HashMap does.
-    final int h = keyBuffer.hashCode();
+    final int h = obj.hashCode();
     return h ^ (h >>> 16);
   }
 
-  public static <KeyType> Iterator<Grouper.Entry<KeyType>> mergeIterators(
+  public static <KeyType extends Comparable<KeyType>> Iterator<Grouper.Entry<KeyType>> mergeIterators(
       final Iterable<Iterator<Grouper.Entry<KeyType>>> iterators,
-      final Grouper.KeyComparator comparator
+      final boolean sorted
   )
   {
-    if (comparator == null) {
-      // Unsorted iteration
-      return Iterators.concat(iterators.iterator());
+    if (sorted) {
+      return Iterators.mergeSorted(iterators, ENTRY_COMPARATOR);
     } else {
-      // Sorted iteration
-      return Iterators.mergeSorted(
-          iterators,
-          new Comparator<Grouper.Entry<KeyType>>()
-          {
-            @Override
-            public int compare(Grouper.Entry<KeyType> lhs, Grouper.Entry<KeyType> rhs)
-            {
-              return comparator.compare(
-                  lhs.getBuffer(),
-                  rhs.getBuffer(),
-                  lhs.getBuffer().position(),
-                  rhs.getBuffer().position()
-              );
-            }
-          }
-      );
+      return Iterators.concat(iterators.iterator());
     }
   }
 }

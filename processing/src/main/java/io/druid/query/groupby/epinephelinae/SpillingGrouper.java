@@ -19,18 +19,24 @@
 
 package io.druid.query.groupby.epinephelinae;
 
+import com.fasterxml.jackson.core.JsonGenerator;
+import com.fasterxml.jackson.databind.MappingIterator;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.common.base.Function;
 import com.google.common.base.Throwables;
+import com.google.common.collect.Iterators;
 import com.google.common.collect.Lists;
-import com.google.common.io.Files;
-import com.metamx.common.ByteBufferUtils;
+import com.metamx.common.guava.CloseQuietly;
 import com.metamx.common.logger.Logger;
 import io.druid.query.aggregation.AggregatorFactory;
 import io.druid.segment.ColumnSelectorFactory;
 
+import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.nio.ByteBuffer;
-import java.nio.MappedByteBuffer;
+import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
@@ -39,7 +45,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.UUID;
 
-public class SpillingGrouper<KeyType> implements Grouper<KeyType>
+public class SpillingGrouper<KeyType extends Comparable<KeyType>> implements Grouper<KeyType>
 {
   private static final Logger log = new Logger(SpillingGrouper.class);
 
@@ -47,35 +53,48 @@ public class SpillingGrouper<KeyType> implements Grouper<KeyType>
   private final KeySerde<KeyType> keySerde;
   private final File spillDirectory;
   private final String spillPrefix;
+  private final ObjectMapper spillMapper;
+  private final int spillEvery;
+  private final AggregatorFactory[] aggregatorFactories;
+
   private final List<File> files = Lists.newArrayList();
-  private final List<MappedByteBuffer> mmaps = Lists.newArrayList();
+  private final List<Closeable> closeables = Lists.newArrayList();
+
+  private int rowsAdded = 0;
 
   public SpillingGrouper(
       final ByteBuffer buffer,
-      final KeySerde<KeyType> keySerde,
+      final KeySerdeFactory<KeyType> keySerdeFactory,
       final ColumnSelectorFactory columnSelectorFactory,
       final AggregatorFactory[] aggregatorFactories,
-      final File spillDirectory
+      final File spillDirectory,
+      final ObjectMapper spillMapper,
+      final int spillEvery
   )
   {
+    this.keySerde = keySerdeFactory.factorize();
     this.grouper = new BufferGrouper<>(
         buffer,
         keySerde,
         columnSelectorFactory,
         aggregatorFactories
     );
-    this.keySerde = keySerde;
+    this.aggregatorFactories = aggregatorFactories;
     this.spillDirectory = spillDirectory;
+    this.spillMapper = spillMapper;
     this.spillPrefix = UUID.randomUUID().toString();
+    this.spillEvery = spillEvery;
   }
 
   @Override
-  public boolean aggregate(ByteBuffer key, int keyHash)
+  public boolean aggregate(KeyType key, int keyHash)
   {
-    if (grouper.aggregate(key, keyHash)) {
+    if (rowsAdded < spillEvery && grouper.aggregate(key, keyHash)) {
+      rowsAdded++;
       return true;
     } else {
       spill();
+      rowsAdded = 0;
       return grouper.aggregate(key, keyHash);
     }
   }
@@ -83,13 +102,13 @@ public class SpillingGrouper<KeyType> implements Grouper<KeyType>
   @Override
   public boolean aggregate(KeyType key)
   {
-    final ByteBuffer keyBuffer = keySerde.toByteBuffer(key);
-    return aggregate(keyBuffer, Groupers.hash(keyBuffer));
+    return aggregate(key, Groupers.hash(key));
   }
 
   @Override
   public void reset()
   {
+    rowsAdded = 0;
     grouper.reset();
     deleteFiles();
   }
@@ -102,24 +121,45 @@ public class SpillingGrouper<KeyType> implements Grouper<KeyType>
   }
 
   @Override
-  public Iterator<Entry<KeyType>> iterator(final boolean deserialize)
+  public Iterator<Entry<KeyType>> iterator(final boolean sorted)
   {
     final List<Iterator<Entry<KeyType>>> iterators = new ArrayList<>(1 + files.size());
 
-    iterators.add(grouper.iterator(deserialize));
-    for (int fileNum = 0; fileNum < files.size(); fileNum++) {
-      iterators.add(read(fileNum, deserialize));
+    iterators.add(grouper.iterator(sorted));
+
+    for (final File file : files) {
+      final MappingIterator<Entry<KeyType>> fileIterator = read(file, keySerde.keyClazz());
+      iterators.add(
+          Iterators.transform(
+              fileIterator,
+              new Function<Entry<KeyType>, Entry<KeyType>>()
+              {
+                @Override
+                public Entry<KeyType> apply(Entry<KeyType> entry)
+                {
+                  final Object[] deserializedValues = new Object[entry.getValues().length];
+                  for (int i = 0; i < deserializedValues.length; i++) {
+                    deserializedValues[i] = aggregatorFactories[i].deserialize(entry.getValues()[i]);
+                    if (deserializedValues[i] instanceof Integer) {
+                      // TODO(gianm): This is a hack to satisfy the groupBy tests, maybe we can do better.
+                      deserializedValues[i] = ((Integer) deserializedValues[i]).longValue();
+                    }
+                  }
+                  return new Entry<>(entry.getKey(), deserializedValues);
+                }
+              }
+          )
+      );
+      closeables.add(fileIterator);
     }
 
-    return Groupers.mergeIterators(iterators, keySerde.comparator());
+    return Groupers.mergeIterators(iterators, sorted);
   }
 
   private void spill()
   {
-    // TODO(gianm): Dictionary (DimDim) stays in-heap after spilling, probs should convert that somehow
     // TODO(gianm): Limit on disk use
     // TODO(gianm): Compress spill files?
-    // TODO(gianm): Write aggregators in serialized form rather than raw memory form?
 
     final EnumSet<StandardOpenOption> openOptions = EnumSet.of(
         StandardOpenOption.CREATE_NEW,
@@ -129,10 +169,14 @@ public class SpillingGrouper<KeyType> implements Grouper<KeyType>
     final File file = new File(spillDirectory, String.format("%s_%04d", spillPrefix, files.size()));
     files.add(file);
 
-    try (final FileChannel out = FileChannel.open(file.toPath(), openOptions)) {
-      final Iterator<Entry<KeyType>> it = grouper.iterator(false);
+    try (
+        final FileChannel channel = FileChannel.open(file.toPath(), openOptions);
+        final OutputStream out = Channels.newOutputStream(channel);
+        final JsonGenerator jsonGenerator = spillMapper.getFactory().createGenerator(out)
+    ) {
+      final Iterator<Entry<KeyType>> it = grouper.iterator(true);
       while (it.hasNext()) {
-        out.write(it.next().getBuffer());
+        jsonGenerator.writeObject(it.next());
       }
     }
     catch (IOException e) {
@@ -142,61 +186,26 @@ public class SpillingGrouper<KeyType> implements Grouper<KeyType>
     grouper.reset();
   }
 
-  private Iterator<Entry<KeyType>> read(final int fileNum, final boolean deserialize)
+  private MappingIterator<Entry<KeyType>> read(final File file, final Class<KeyType> keyClazz)
   {
-    final File file = files.get(fileNum);
-
-    if (mmaps.size() < fileNum + 1) {
-      for (int i = mmaps.size(); i <= fileNum; i++) {
-        try {
-          mmaps.add(Files.map(file, FileChannel.MapMode.READ_ONLY));
-        }
-        catch (IOException e) {
-          throw Throwables.propagate(e);
-        }
-      }
+    try {
+      return spillMapper.readValues(
+          spillMapper.getFactory().createParser(file),
+          spillMapper.getTypeFactory().constructParametricType(Entry.class, keyClazz)
+      );
     }
-
-    final MappedByteBuffer mmap = mmaps.get(fileNum);
-
-    return new Iterator<Entry<KeyType>>()
-    {
-      int position = 0;
-
-      @Override
-      public boolean hasNext()
-      {
-        return position < mmap.capacity();
-      }
-
-      @Override
-      public Entry<KeyType> next()
-      {
-        final ByteBuffer entryBuffer = mmap.duplicate();
-        entryBuffer.position(position);
-        entryBuffer.limit(position + grouper.getEntryBufferSize());
-        position += grouper.getEntryBufferSize();
-        return grouper.bucketEntryForBuffer(entryBuffer.slice(), deserialize);
-      }
-
-      @Override
-      public void remove()
-      {
-        throw new UnsupportedOperationException();
-      }
-    };
+    catch (IOException e) {
+      throw Throwables.propagate(e);
+    }
   }
 
   private void deleteFiles()
   {
-    for (int i = 0; i < files.size(); i++) {
-      // I really hope you aren't iterating while you call close()...
-      final MappedByteBuffer mmap = mmaps.get(i);
-      if (mmap != null) {
-        ByteBufferUtils.unmap(mmap);
-      }
-
-      final File file = files.get(i);
+    for (Closeable closeable : closeables) {
+      // CloseQuietly is OK on readable streams
+      CloseQuietly.close(closeable);
+    }
+    for (final File file : files) {
       if (!file.delete()) {
         log.warn("Could not delete file[%s]", file);
       }

@@ -218,6 +218,7 @@ public class CombiningSequenceTest
   ) throws Exception
   {
     // Test that closing works too
+    // TODO(gianm): Test closing when exceptions are thrown
     final CountDownLatch closed = new CountDownLatch(1);
     final Closeable closeable = new Closeable()
     {

@@ -19,6 +19,9 @@
 
 package io.druid.query.groupby.epinephelinae;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Function;
 import com.google.common.base.Predicates;
 import com.google.common.base.Strings;
@@ -36,8 +39,8 @@ import com.google.common.util.concurrent.MoreExecutors;
 import com.metamx.common.ISE;
 import com.metamx.common.guava.Accumulator;
 import com.metamx.common.guava.BaseSequence;
+import com.metamx.common.guava.ResourceClosingSequence;
 import com.metamx.common.guava.Sequence;
-import com.metamx.common.guava.Sequences;
 import com.metamx.common.logger.Logger;
 import io.druid.collections.BlockingPool;
 import io.druid.collections.ResourceHolder;
@@ -54,18 +57,18 @@ import io.druid.query.QueryWatcher;
 import io.druid.query.aggregation.AggregatorFactory;
 import io.druid.query.dimension.DimensionSpec;
 import io.druid.query.groupby.GroupByQuery;
+import io.druid.query.groupby.GroupByQueryConfig;
 import io.druid.segment.ColumnSelectorFactory;
 import io.druid.segment.DimensionSelector;
 import io.druid.segment.FloatColumnSelector;
 import io.druid.segment.LongColumnSelector;
 import io.druid.segment.ObjectColumnSelector;
-import io.druid.segment.incremental.IncrementalIndex;
-import io.druid.segment.incremental.OnheapIncrementalIndex;
 
 import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CancellationException;
@@ -78,22 +81,28 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
 {
   private static final Logger log = new Logger(EpiGroupByMergingQueryRunner.class);
 
+  private final GroupByQueryConfig config;
   private final Iterable<QueryRunner<Row>> queryables;
   private final ListeningExecutorService exec;
   private final QueryWatcher queryWatcher;
   private final BlockingPool<ByteBuffer> mergeBufferPool;
+  private final ObjectMapper spillMapper;
 
   public EpiGroupByMergingQueryRunner(
+      GroupByQueryConfig config,
       ExecutorService exec,
       QueryWatcher queryWatcher,
       Iterable<QueryRunner<Row>> queryables,
-      BlockingPool<ByteBuffer> mergeBufferPool
+      BlockingPool<ByteBuffer> mergeBufferPool,
+      ObjectMapper spillMapper
   )
   {
+    this.config = config;
     this.exec = MoreExecutors.listeningDecorator(exec);
     this.queryWatcher = queryWatcher;
     this.queryables = Iterables.unmodifiableIterable(Iterables.filter(queryables, Predicates.notNull()));
     this.mergeBufferPool = mergeBufferPool;
+    this.spillMapper = spillMapper;
   }
 
   @Override
@@ -110,11 +119,13 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
       combiningAggregatorFactories[i] = query.getAggregatorSpecs().get(i).getCombiningFactory();
     }
 
-    final GroupByMergingKeySerde keySerde = new GroupByMergingKeySerde(query.getDimensions().size());
+    final GroupByMergingKeySerdeFactory keySerdeFactory = new GroupByMergingKeySerdeFactory(
+        query.getDimensions().size()
+    );
     final GroupByMergingColumnSelectorFactory columnSelectorFactory = new GroupByMergingColumnSelectorFactory();
 
     // TODO(gianm): get concurrency level from processing thread pool size
-    final int concurrencyHint = 16;
+    final int concurrencyHint = 1;
 
     // TODO(gianm): Configurable spill dir
     final File spillDirectory = Files.createTempDir();
@@ -129,7 +140,7 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
       throw Throwables.propagate(e);
     }
 
-    return Sequences.withBaggage(
+    return new ResourceClosingSequence<>(
         new BaseSequence<>(
             new BaseSequence.IteratorMaker<Row, CloseableGrouperIterator<GroupByMergingKey, Row>>()
             {
@@ -140,7 +151,9 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
                     mergeBuffer.get(),
                     concurrencyHint,
                     spillDirectory,
-                    keySerde,
+                    spillMapper,
+                    config.getSpillEvery(),
+                    keySerdeFactory,
                     columnSelectorFactory,
                     combiningAggregatorFactories
                 );
@@ -218,6 +231,7 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
 
                 return new CloseableGrouperIterator<>(
                     grouper,
+                    true,
                     new Function<Grouper.Entry<GroupByMergingKey>, Row>()
                     {
                       @Override
@@ -243,8 +257,7 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
                             theMap
                         );
                       }
-                    },
-                    true
+                    }
                 );
               }
 
@@ -262,7 +275,7 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
           {
             mergeBuffer.close();
             if (!spillDirectory.delete()) {
-              log.warn("Could not delete spillDirectory[%s].");
+              log.warn("Could not delete spillDirectory[%s].", spillDirectory);
             }
           }
         }
@@ -303,49 +316,120 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
     }
   }
 
-  private static class GroupByMergingKey
+  private static class GroupByMergingKey implements Comparable<GroupByMergingKey>
   {
     private final long timestamp;
     private final String[] dimensions;
 
-    public GroupByMergingKey(long timestamp, String[] dimensions)
+    @JsonCreator
+    public GroupByMergingKey(
+        @JsonProperty("t") long timestamp,
+        @JsonProperty("d") String[] dimensions
+    )
     {
       this.timestamp = timestamp;
       this.dimensions = dimensions;
     }
 
+    @JsonProperty("t")
     public long getTimestamp()
     {
       return timestamp;
     }
 
+    @JsonProperty("d")
     public String[] getDimensions()
     {
       return dimensions;
+    }
+
+    @Override
+    public boolean equals(Object o)
+    {
+      if (this == o) {
+        return true;
+      }
+      if (o == null || getClass() != o.getClass()) {
+        return false;
+      }
+
+      GroupByMergingKey that = (GroupByMergingKey) o;
+
+      if (timestamp != that.timestamp) {
+        return false;
+      }
+      // Probably incorrect - comparing Object[] arrays with Arrays.equals
+      return Arrays.equals(dimensions, that.dimensions);
+
+    }
+
+    @Override
+    public int hashCode()
+    {
+      int result = (int) (timestamp ^ (timestamp >>> 32));
+      result = 31 * result + Arrays.hashCode(dimensions);
+      return result;
+    }
+
+    @Override
+    public int compareTo(GroupByMergingKey other)
+    {
+      final int timeCompare = Longs.compare(timestamp, other.getTimestamp());
+      if (timeCompare != 0) {
+        return timeCompare;
+      }
+
+      for (int i = 0; i < dimensions.length; i++) {
+        final int cmp = dimensions[i].compareTo(other.getDimensions()[i]);
+        if (cmp != 0) {
+          return cmp;
+        }
+      }
+
+      return 0;
+    }
+
+    @Override
+    public String toString()
+    {
+      return "GroupByMergingKey{" +
+             "timestamp=" + timestamp +
+             ", dimensions=" + Arrays.toString(dimensions) +
+             '}';
+    }
+  }
+
+  private static class GroupByMergingKeySerdeFactory implements Grouper.KeySerdeFactory<GroupByMergingKey>
+  {
+    private final int dimCount;
+
+    public GroupByMergingKeySerdeFactory(int dimCount)
+    {
+      this.dimCount = dimCount;
+    }
+
+    @Override
+    public Grouper.KeySerde<GroupByMergingKey> factorize()
+    {
+      return new GroupByMergingKeySerde(dimCount);
     }
   }
 
   private static class GroupByMergingKeySerde implements Grouper.KeySerde<GroupByMergingKey>
   {
-    private final OnheapIncrementalIndex.OnHeapDimDim<String> dimDim;
     private final int dimCount;
     private final int keySize;
-    private final ThreadLocal<ByteBuffer> threadLocalKeyBuffer;
-    private IncrementalIndex.SortedDimLookup<String> sortedDimDim = null;
+    private final ByteBuffer keyBuffer;
+    private final List<String> dictionary = Lists.newArrayList();
+    private final Map<String, Integer> reverseDictionary = Maps.newHashMap();
+
+    private int[] sortableIds = null;
 
     public GroupByMergingKeySerde(final int dimCount)
     {
-      this.dimDim = new OnheapIncrementalIndex.OnHeapDimDim<>(new Object());
       this.dimCount = dimCount;
       this.keySize = Longs.BYTES + dimCount * Ints.BYTES;
-      this.threadLocalKeyBuffer = new ThreadLocal<ByteBuffer>()
-      {
-        @Override
-        protected ByteBuffer initialValue()
-        {
-          return ByteBuffer.allocate(keySize);
-        }
-      };
+      this.keyBuffer = ByteBuffer.allocate(keySize);
     }
 
     @Override
@@ -355,13 +439,18 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
     }
 
     @Override
+    public Class<GroupByMergingKey> keyClazz()
+    {
+      return GroupByMergingKey.class;
+    }
+
+    @Override
     public ByteBuffer toByteBuffer(GroupByMergingKey key)
     {
-      final ByteBuffer keyBuffer = threadLocalKeyBuffer.get();
       keyBuffer.rewind();
       keyBuffer.putLong(key.getTimestamp());
       for (int i = 0; i < key.getDimensions().length; i++) {
-        keyBuffer.putInt(dimDim.add(key.getDimensions()[i]));
+        keyBuffer.putInt(addToDictionary(key.getDimensions()[i]));
       }
       keyBuffer.flip();
       return keyBuffer;
@@ -373,7 +462,7 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
       final long timestamp = buffer.getLong(position);
       final String[] dimensions = new String[dimCount];
       for (int i = 0; i < dimensions.length; i++) {
-        dimensions[i] = dimDim.getValue(buffer.getInt(position + Longs.BYTES + (Ints.BYTES * i)));
+        dimensions[i] = dictionary.get(buffer.getInt(position + Longs.BYTES + (Ints.BYTES * i)));
       }
       return new GroupByMergingKey(timestamp, dimensions);
     }
@@ -381,10 +470,16 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
     @Override
     public Grouper.KeyComparator comparator()
     {
-      // Not OK to continue adding after comparator is pulled out (even with reset) but that's fine; we don't do that.
-
-      if (sortedDimDim == null) {
-        sortedDimDim = dimDim.sort();
+      if (sortableIds == null) {
+        Map<String, Integer> sortedMap = Maps.newTreeMap();
+        for (int id = 0; id < dictionary.size(); id++) {
+          sortedMap.put(dictionary.get(id), id);
+        }
+        sortableIds = new int[dictionary.size()];
+        int index = 0;
+        for (final Integer id : sortedMap.values()) {
+          sortableIds[id] = index++;
+        }
       }
 
       return new Grouper.KeyComparator()
@@ -399,12 +494,8 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
 
           for (int i = 0; i < dimCount; i++) {
             final int cmp = Ints.compare(
-                sortedDimDim.getSortedIdFromUnsortedId(
-                    lhsBuffer.getInt(lhsPosition + Longs.BYTES + (Ints.BYTES * i))
-                ),
-                sortedDimDim.getSortedIdFromUnsortedId(
-                    rhsBuffer.getInt(rhsPosition + Longs.BYTES + (Ints.BYTES * i))
-                )
+                sortableIds[lhsBuffer.getInt(lhsPosition + Longs.BYTES + (Ints.BYTES * i))],
+                sortableIds[rhsBuffer.getInt(rhsPosition + Longs.BYTES + (Ints.BYTES * i))]
             );
 
             if (cmp != 0) {
@@ -415,6 +506,25 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
           return 0;
         }
       };
+    }
+
+    @Override
+    public void reset()
+    {
+      dictionary.clear();
+      reverseDictionary.clear();
+      sortableIds = null;
+    }
+
+    private int addToDictionary(final String s)
+    {
+      Integer idx = reverseDictionary.get(s);
+      if (idx == null) {
+        idx = dictionary.size();
+        reverseDictionary.put(s, idx);
+        dictionary.add(s);
+      }
+      return idx;
     }
   }
 

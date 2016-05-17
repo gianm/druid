@@ -19,6 +19,7 @@
 
 package io.druid.query.groupby;
 
+import com.fasterxml.jackson.dataformat.smile.SmileFactory;
 import com.google.common.base.Supplier;
 import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableList;
@@ -38,6 +39,7 @@ import io.druid.collections.StupidPool;
 import io.druid.data.input.Row;
 import io.druid.granularity.PeriodGranularity;
 import io.druid.granularity.QueryGranularities;
+import io.druid.jackson.DefaultObjectMapper;
 import io.druid.js.JavaScriptConfig;
 import io.druid.query.BySegmentResultValue;
 import io.druid.query.BySegmentResultValueClass;
@@ -78,6 +80,7 @@ import io.druid.query.filter.OrDimFilter;
 import io.druid.query.filter.RegexDimFilter;
 import io.druid.query.filter.SearchQueryDimFilter;
 import io.druid.query.filter.SelectorDimFilter;
+import io.druid.query.groupby.epinephelinae.EpiGroupByStrategy;
 import io.druid.query.groupby.having.EqualToHavingSpec;
 import io.druid.query.groupby.having.GreaterThanHavingSpec;
 import io.druid.query.groupby.having.HavingSpec;
@@ -85,7 +88,6 @@ import io.druid.query.groupby.having.OrHavingSpec;
 import io.druid.query.groupby.orderby.DefaultLimitSpec;
 import io.druid.query.groupby.orderby.LimitSpec;
 import io.druid.query.groupby.orderby.OrderByColumnSpec;
-import io.druid.query.groupby.epinephelinae.EpiGroupByStrategy;
 import io.druid.query.groupby.strategy.GroupByStrategySelector;
 import io.druid.query.groupby.strategy.OldFaithfulGroupByStrategy;
 import io.druid.query.lookup.LookupExtractionFn;
@@ -140,7 +142,7 @@ public class GroupByQueryRunnerTest
           @Override
           public ByteBuffer get()
           {
-            return ByteBuffer.allocate(1024 * 1024);
+            return ByteBuffer.allocate(10 * 1024 * 1024);
           }
         }
     );
@@ -150,7 +152,7 @@ public class GroupByQueryRunnerTest
           @Override
           public ByteBuffer get()
           {
-            return ByteBuffer.allocate(1024 * 1024);
+            return ByteBuffer.allocate(10 * 1024 * 1024);
           }
         },
         4
@@ -164,8 +166,10 @@ public class GroupByQueryRunnerTest
             bufferPool
         ),
         new EpiGroupByStrategy(
+            configSupplier,
             bufferPool,
             mergeBufferPool,
+            new DefaultObjectMapper(new SmileFactory()),
             QueryRunnerTestHelper.NOOP_QUERYWATCHER
         )
     );
@@ -201,6 +205,20 @@ public class GroupByQueryRunnerTest
         return "epinephelinae";
       }
     };
+    final GroupByQueryConfig epinephelinaeSpillingConfig = new GroupByQueryConfig()
+    {
+      @Override
+      public String getDefaultStrategy()
+      {
+        return "epinephelinae";
+      }
+
+      @Override
+      public int getSpillEvery()
+      {
+        return 3;
+      }
+    };
 
     defaultConfig.setMaxIntermediateRows(10000);
     singleThreadedConfig.setMaxIntermediateRows(10000);
@@ -209,7 +227,8 @@ public class GroupByQueryRunnerTest
     final List<GroupByQueryConfig> configs = ImmutableList.of(
         defaultConfig,
         singleThreadedConfig,
-        epinephelinaeConfig
+        epinephelinaeConfig,
+        epinephelinaeSpillingConfig
     );
 
     for (GroupByQueryConfig config : configs) {

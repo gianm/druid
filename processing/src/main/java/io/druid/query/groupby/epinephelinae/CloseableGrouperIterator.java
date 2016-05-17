@@ -24,7 +24,7 @@ import com.google.common.base.Function;
 import java.io.Closeable;
 import java.util.Iterator;
 
-public class CloseableGrouperIterator<KeyType, T> implements Iterator<T>, Closeable
+public class CloseableGrouperIterator<KeyType extends Comparable<KeyType>, T> implements Iterator<T>, Closeable
 {
   private final Grouper<KeyType> grouper;
   private final Function<Grouper.Entry<KeyType>, T> transformer;
@@ -32,13 +32,13 @@ public class CloseableGrouperIterator<KeyType, T> implements Iterator<T>, Closea
 
   public CloseableGrouperIterator(
       final Grouper<KeyType> grouper,
-      final Function<Grouper.Entry<KeyType>, T> transformer,
-      final boolean deserialize
+      final boolean sorted,
+      final Function<Grouper.Entry<KeyType>, T> transformer
   )
   {
     this.grouper = grouper;
     this.transformer = transformer;
-    this.iterator = grouper.iterator(deserialize);
+    this.iterator = grouper.iterator(sorted);
   }
 
   @Override
