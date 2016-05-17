@@ -88,30 +88,22 @@ public class BufferGrouper<KeyType extends Comparable<KeyType>> implements Group
   @Override
   public boolean aggregate(KeyType key, int keyHash)
   {
-    final int bucket;
-    final int offset;
     final ByteBuffer keyBuffer = keySerde.toByteBuffer(key);
 
-    if (keySize == 0) {
-      // Optimization for nil key
-      bucket = 0;
-      offset = 0;
-    } else {
-      Preconditions.checkArgument(
-          keyBuffer.remaining() == keySize,
-          "key size[%s] != keySize[%s]",
-          keyBuffer.remaining(),
-          keySize
-      );
+    Preconditions.checkArgument(
+        keyBuffer.remaining() == keySize,
+        "key size[%s] != keySize[%s]",
+        keyBuffer.remaining(),
+        keySize
+    );
 
-      bucket = findBucket(keyBuffer, keyHash, true);
+    final int bucket = findBucket(keyBuffer, keyHash, true);
 
-      if (bucket < 0) {
-        return false;
-      }
-
-      offset = bucket * bucketSize;
+    if (bucket < 0) {
+      return false;
     }
+
+    final int offset = bucket * bucketSize;
 
     // Set up key if this is a new bucket.
     if (!isUsed(bucket)) {
