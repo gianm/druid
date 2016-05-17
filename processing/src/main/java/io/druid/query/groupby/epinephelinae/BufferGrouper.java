@@ -82,6 +82,7 @@ public class BufferGrouper<KeyType extends Comparable<KeyType>> implements Group
     this.tableEnd = buckets * bucketSize;
 
     // Clear out any junk in the buffer
+    // TODO(gianm): Avoid clearing the buffer by resizing?
     reset();
   }
 
