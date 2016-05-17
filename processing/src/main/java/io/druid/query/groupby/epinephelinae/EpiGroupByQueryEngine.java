@@ -89,7 +89,9 @@ public class EpiGroupByQueryEngine
         query.getContextValue(EpiGroupByStrategy.CTX_KEY_FUDGE_TIMESTAMP, "")
     );
 
-    final Long fudgeTimestamp = fudgeTimestampString == null ? null : Long.parseLong(fudgeTimestampString);
+    final DateTime fudgeTimestamp = fudgeTimestampString == null
+                                    ? null
+                                    : new DateTime(Long.parseLong(fudgeTimestampString));
 
     return Sequences.concat(
         new ResourceClosingSequence<>(
@@ -124,9 +126,7 @@ public class EpiGroupByQueryEngine
                             final IndexedInts[] valuess = new IndexedInts[selectors.length];
 
                             // Time is the same for every row in the cursor
-                            final DateTime myTimestamp = fudgeTimestamp != null
-                                                         ? query.getGranularity().toDateTime(fudgeTimestamp)
-                                                         : cursor.getTime();
+                            final DateTime myTimestamp = fudgeTimestamp != null ? fudgeTimestamp : cursor.getTime();
 
                             while (!cursor.isDone()) {
                               int stackp = stack.length - 1;
