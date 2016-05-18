@@ -41,6 +41,9 @@ public class GroupByQueryConfig
   // Not worth documenting, only used for tests
   private int spillEvery = Integer.MAX_VALUE;
 
+  @JsonProperty
+  private int maxMergingDictionarySize = 20 * 1024 * 1024;
+
   public String getDefaultStrategy()
   {
     return defaultStrategy;
@@ -69,5 +72,10 @@ public class GroupByQueryConfig
   public int getSpillEvery()
   {
     return spillEvery;
+  }
+
+  public int getMaxMergingDictionarySize()
+  {
+    return maxMergingDictionarySize;
   }
 }
