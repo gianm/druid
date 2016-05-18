@@ -180,7 +180,6 @@ public class EpiGroupByStrategy implements GroupByStrategy
       Iterable<QueryRunner<Row>> queryRunners
   )
   {
-    // TODO(gianm): get mapper from somewhere real
     return new EpiGroupByMergingQueryRunner(
         configSupplier.get(),
         exec,
