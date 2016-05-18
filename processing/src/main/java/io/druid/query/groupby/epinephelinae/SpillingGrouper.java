@@ -54,13 +54,11 @@ public class SpillingGrouper<KeyType extends Comparable<KeyType>> implements Gro
   private final File spillDirectory;
   private final String spillPrefix;
   private final ObjectMapper spillMapper;
-  private final int spillEvery;
+  private final int maxBufferGrouperSize;
   private final AggregatorFactory[] aggregatorFactories;
 
   private final List<File> files = Lists.newArrayList();
   private final List<Closeable> closeables = Lists.newArrayList();
-
-  private int rowsAdded = 0;
 
   public SpillingGrouper(
       final ByteBuffer buffer,
@@ -69,7 +67,7 @@ public class SpillingGrouper<KeyType extends Comparable<KeyType>> implements Gro
       final AggregatorFactory[] aggregatorFactories,
       final File spillDirectory,
       final ObjectMapper spillMapper,
-      final int spillEvery
+      final int maxBufferGrouperSize
   )
   {
     this.keySerde = keySerdeFactory.factorize();
@@ -77,24 +75,23 @@ public class SpillingGrouper<KeyType extends Comparable<KeyType>> implements Gro
         buffer,
         keySerde,
         columnSelectorFactory,
-        aggregatorFactories
+        aggregatorFactories,
+        maxBufferGrouperSize
     );
     this.aggregatorFactories = aggregatorFactories;
     this.spillDirectory = spillDirectory;
     this.spillMapper = spillMapper;
     this.spillPrefix = UUID.randomUUID().toString();
-    this.spillEvery = spillEvery;
+    this.maxBufferGrouperSize = maxBufferGrouperSize;
   }
 
   @Override
   public boolean aggregate(KeyType key, int keyHash)
   {
-    if (rowsAdded < spillEvery && grouper.aggregate(key, keyHash)) {
-      rowsAdded++;
+    if (grouper.aggregate(key, keyHash)) {
       return true;
     } else {
       spill();
-      rowsAdded = 0;
       return grouper.aggregate(key, keyHash);
     }
   }
@@ -108,7 +105,6 @@ public class SpillingGrouper<KeyType extends Comparable<KeyType>> implements Gro
   @Override
   public void reset()
   {
-    rowsAdded = 0;
     grouper.reset();
     deleteFiles();
   }

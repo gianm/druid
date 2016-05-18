@@ -46,7 +46,6 @@ public class OffheapBufferGenerator implements Supplier<ByteBuffer>
         "Allocating new %s buffer[%,d] of size[%,d]",
         description,
         count.getAndIncrement(),
-        count.getAndIncrement(),
         computationBufferSize
     );
 

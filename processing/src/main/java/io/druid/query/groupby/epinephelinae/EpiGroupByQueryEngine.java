@@ -36,6 +36,7 @@ import io.druid.data.input.MapBasedRow;
 import io.druid.data.input.Row;
 import io.druid.query.aggregation.AggregatorFactory;
 import io.druid.query.groupby.GroupByQuery;
+import io.druid.query.groupby.GroupByQueryConfig;
 import io.druid.segment.Cursor;
 import io.druid.segment.DimensionSelector;
 import io.druid.segment.StorageAdapter;
@@ -48,8 +49,10 @@ import org.joda.time.Interval;
 import java.io.Closeable;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
 
 public class EpiGroupByQueryEngine
 {
@@ -61,7 +64,8 @@ public class EpiGroupByQueryEngine
   public static Sequence<Row> process(
       final GroupByQuery query,
       final StorageAdapter storageAdapter,
-      final StupidPool<ByteBuffer> intermediateResultsBufferPool
+      final StupidPool<ByteBuffer> intermediateResultsBufferPool,
+      final GroupByQueryConfig config
   )
   {
     if (storageAdapter == null) {
@@ -103,131 +107,23 @@ public class EpiGroupByQueryEngine
                   public Sequence<Row> apply(final Cursor cursor)
                   {
                     return new BaseSequence<>(
-                        new BaseSequence.IteratorMaker<Row, CloseableGrouperIterator<ByteBuffer, Row>>()
+                        new BaseSequence.IteratorMaker<Row, GroupByEngineIterator>()
                         {
                           @Override
-                          public CloseableGrouperIterator<ByteBuffer, Row> make()
+                          public GroupByEngineIterator make()
                           {
-                            final Grouper<ByteBuffer> grouper = new BufferGrouper<>(
+                            return new GroupByEngineIterator(
+                                query,
+                                config,
+                                cursor,
                                 bufferHolder.get(),
                                 keySerde,
-                                cursor,
-                                query.getAggregatorSpecs()
-                                     .toArray(new AggregatorFactory[query.getAggregatorSpecs().size()])
-                            );
-
-                            final ByteBuffer keyBuffer = ByteBuffer.allocate(keySerde.keySize());
-                            final int dimCount = query.getDimensions().size();
-                            final DimensionSelector[] selectors = new DimensionSelector[dimCount];
-                            for (int i = 0; i < selectors.length; i++) {
-                              selectors[i] = cursor.makeDimensionSelector(query.getDimensions().get(i));
-                            }
-                            final int[] stack = new int[selectors.length];
-                            final IndexedInts[] valuess = new IndexedInts[selectors.length];
-
-                            // Time is the same for every row in the cursor
-                            final DateTime myTimestamp = fudgeTimestamp != null ? fudgeTimestamp : cursor.getTime();
-
-                            while (!cursor.isDone()) {
-                              int stackp = stack.length - 1;
-
-                              for (int i = 0; i < selectors.length; i++) {
-                                final DimensionSelector selector = selectors[i];
-
-                                valuess[i] = selector == null ? EmptyIndexedInts.EMPTY_INDEXED_INTS : selector.getRow();
-
-                                // Set up first grouping
-                                final int position = Ints.BYTES * i;
-                                if (valuess[i].size() == 0) {
-                                  stack[i] = 0;
-                                  keyBuffer.putInt(position, -1);
-                                } else {
-                                  stack[i] = 1;
-                                  keyBuffer.putInt(position, valuess[i].get(0));
-                                }
-                              }
-
-                              // Aggregate first grouping for this row
-                              keyBuffer.rewind();
-                              if (!grouper.aggregate(keyBuffer)) {
-                                // TODO(gianm): Handle overflow by emitting partially grouped results
-                                throw new ISE("Oops, buffer filled up");
-                              }
-
-                              // Aggregate additional groupings for this row
-                              while (stackp >= 0) {
-                                if (stack[stackp] < valuess[stackp].size()) {
-                                  // Load next value for current slot
-                                  keyBuffer.putInt(
-                                      Ints.BYTES * stackp,
-                                      valuess[stackp].get(stack[stackp])
-                                  );
-                                  stack[stackp]++;
-
-                                  // Reset later slots
-                                  for (int i = stackp + 1; i < stack.length; i++) {
-                                    final int position = Ints.BYTES * i;
-                                    if (valuess[i].size() == 0) {
-                                      stack[i] = 0;
-                                      keyBuffer.putInt(position, -1);
-                                    } else {
-                                      stack[i] = 1;
-                                      keyBuffer.putInt(position, valuess[i].get(0));
-                                    }
-                                  }
-
-                                  // Aggregate additional grouping for this row
-                                  keyBuffer.rewind();
-                                  if (!grouper.aggregate(keyBuffer)) {
-                                    // TODO(gianm): Handle overflow by emitting partially grouped results
-                                    throw new ISE("Oops, buffer filled up");
-                                  }
-
-                                  stackp = stack.length - 1;
-                                } else {
-                                  stackp--;
-                                }
-                              }
-
-                              // Advance to next row
-                              cursor.advance();
-                            }
-
-                            return new CloseableGrouperIterator<>(
-                                grouper,
-                                false,
-                                new Function<Grouper.Entry<ByteBuffer>, Row>()
-                                {
-                                  @Override
-                                  public Row apply(final Grouper.Entry<ByteBuffer> entry)
-                                  {
-                                    Map<String, Object> theMap = Maps.newHashMap();
-
-                                    // Add dimensions.
-                                    for (int i = 0; i < dimCount; i++) {
-                                      final int id = entry.getKey().getInt(Ints.BYTES * i);
-
-                                      if (id >= 0) {
-                                        theMap.put(
-                                            query.getDimensions().get(i).getOutputName(),
-                                            selectors[i].lookupName(id)
-                                        );
-                                      }
-                                    }
-
-                                    // Add aggregations.
-                                    for (int i = 0; i < entry.getValues().length; i++) {
-                                      theMap.put(query.getAggregatorSpecs().get(i).getName(), entry.getValues()[i]);
-                                    }
-
-                                    return new MapBasedRow(myTimestamp, theMap);
-                                  }
-                                }
+                                fudgeTimestamp
                             );
                           }
 
                           @Override
-                          public void cleanup(CloseableGrouperIterator iterFromMake)
+                          public void cleanup(GroupByEngineIterator iterFromMake)
                           {
                             iterFromMake.close();
                           }
@@ -246,6 +142,201 @@ public class EpiGroupByQueryEngine
             }
         )
     );
+  }
+
+  private static class GroupByEngineIterator implements Iterator<Row>, Closeable
+  {
+    private final GroupByQuery query;
+    private final GroupByQueryConfig config;
+    private final Cursor cursor;
+    private final ByteBuffer buffer;
+    private final Grouper.KeySerde<ByteBuffer> keySerde;
+    private final DateTime timestamp;
+    private final DimensionSelector[] selectors;
+    private final ByteBuffer keyBuffer;
+    private final int[] stack;
+    private final IndexedInts[] valuess;
+
+    private int stackp = Integer.MIN_VALUE;
+    private boolean currentRowWasPartiallyAggregated = false;
+    private CloseableGrouperIterator<ByteBuffer, Row> delegate = null;
+
+    public GroupByEngineIterator(
+        final GroupByQuery query,
+        final GroupByQueryConfig config,
+        final Cursor cursor,
+        final ByteBuffer buffer,
+        final Grouper.KeySerde<ByteBuffer> keySerde,
+        final DateTime fudgeTimestamp
+    )
+    {
+      final int dimCount = query.getDimensions().size();
+
+      this.query = query;
+      this.config = config;
+      this.cursor = cursor;
+      this.buffer = buffer;
+      this.keySerde = keySerde;
+      this.keyBuffer = ByteBuffer.allocate(keySerde.keySize());
+      this.selectors = new DimensionSelector[dimCount];
+      for (int i = 0; i < dimCount; i++) {
+        this.selectors[i] = cursor.makeDimensionSelector(query.getDimensions().get(i));
+      }
+      this.stack = new int[dimCount];
+      this.valuess = new IndexedInts[dimCount];
+
+      // Time is the same for every row in the cursor
+      this.timestamp = fudgeTimestamp != null ? fudgeTimestamp : cursor.getTime();
+    }
+
+    @Override
+    public Row next()
+    {
+      if (delegate != null && delegate.hasNext()) {
+        return delegate.next();
+      }
+
+      if (cursor.isDone()) {
+        throw new NoSuchElementException();
+      }
+
+      // Make a new delegate iterator
+      if (delegate != null) {
+        delegate.close();
+        delegate = null;
+      }
+
+      final Grouper<ByteBuffer> grouper = new BufferGrouper<>(
+          buffer,
+          keySerde,
+          cursor,
+          query.getAggregatorSpecs()
+               .toArray(new AggregatorFactory[query.getAggregatorSpecs().size()]),
+          config.getMaxBufferGrouperSize()
+      );
+
+outer:
+      while (!cursor.isDone()) {
+        if (!currentRowWasPartiallyAggregated) {
+          // Set up stack, valuess, and first grouping in keyBuffer for this row
+          stackp = stack.length - 1;
+
+          for (int i = 0; i < selectors.length; i++) {
+            final DimensionSelector selector = selectors[i];
+
+            valuess[i] = selector == null ? EmptyIndexedInts.EMPTY_INDEXED_INTS : selector.getRow();
+
+            final int position = Ints.BYTES * i;
+            if (valuess[i].size() == 0) {
+              stack[i] = 0;
+              keyBuffer.putInt(position, -1);
+            } else {
+              stack[i] = 1;
+              keyBuffer.putInt(position, valuess[i].get(0));
+            }
+          }
+        }
+
+        // Aggregate groupings for this row
+        boolean doAggregate = true;
+        while (stackp >= -1) {
+          // Aggregate additional grouping for this row
+          if (doAggregate) {
+            keyBuffer.rewind();
+            if (!grouper.aggregate(keyBuffer)) {
+              // Buffer full while aggregating; break out and resume later
+              currentRowWasPartiallyAggregated = true;
+              break outer;
+            }
+            doAggregate = false;
+          }
+
+          if (stackp >= 0 && stack[stackp] < valuess[stackp].size()) {
+            // Load next value for current slot
+            keyBuffer.putInt(
+                Ints.BYTES * stackp,
+                valuess[stackp].get(stack[stackp])
+            );
+            stack[stackp]++;
+
+            // Reset later slots
+            for (int i = stackp + 1; i < stack.length; i++) {
+              final int position = Ints.BYTES * i;
+              if (valuess[i].size() == 0) {
+                stack[i] = 0;
+                keyBuffer.putInt(position, -1);
+              } else {
+                stack[i] = 1;
+                keyBuffer.putInt(position, valuess[i].get(0));
+              }
+            }
+
+            stackp = stack.length - 1;
+            doAggregate = true;
+          } else {
+            stackp--;
+          }
+        }
+
+        // Advance to next row
+        cursor.advance();
+        currentRowWasPartiallyAggregated = false;
+      }
+
+      delegate = new CloseableGrouperIterator<>(
+          grouper,
+          false,
+          new Function<Grouper.Entry<ByteBuffer>, Row>()
+          {
+            @Override
+            public Row apply(final Grouper.Entry<ByteBuffer> entry)
+            {
+              Map<String, Object> theMap = Maps.newLinkedHashMap();
+
+              // Add dimensions.
+              for (int i = 0; i < selectors.length; i++) {
+                final int id = entry.getKey().getInt(Ints.BYTES * i);
+
+                if (id >= 0) {
+                  theMap.put(
+                      query.getDimensions().get(i).getOutputName(),
+                      selectors[i].lookupName(id)
+                  );
+                }
+              }
+
+              // Add aggregations.
+              for (int i = 0; i < entry.getValues().length; i++) {
+                theMap.put(query.getAggregatorSpecs().get(i).getName(), entry.getValues()[i]);
+              }
+
+              return new MapBasedRow(timestamp, theMap);
+            }
+          }
+      );
+
+      return delegate.next();
+    }
+
+    @Override
+    public boolean hasNext()
+    {
+      return (delegate != null && delegate.hasNext()) || !cursor.isDone();
+    }
+
+    @Override
+    public void remove()
+    {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void close()
+    {
+      if (delegate != null) {
+        delegate.close();
+      }
+    }
   }
 
   private static class GroupByEngineKeySerde implements Grouper.KeySerde<ByteBuffer>

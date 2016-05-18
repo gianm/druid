@@ -52,32 +52,18 @@ public class GroupByQueryRunnerTestHelper
     return Sequences.toList(queryResult, Lists.<T>newArrayList());
   }
 
-  public static Row createExpectedRow(final boolean doubleToFloat, final String timestamp, Object... vals)
-  {
-    return createExpectedRow(doubleToFloat, new DateTime(timestamp), vals);
-  }
-
   public static Row createExpectedRow(final String timestamp, Object... vals)
   {
-    return createExpectedRow(false, new DateTime(timestamp), vals);
+    return createExpectedRow(new DateTime(timestamp), vals);
   }
 
   public static Row createExpectedRow(final DateTime timestamp, Object... vals)
-  {
-    return createExpectedRow(false, timestamp, vals);
-  }
-
-  public static Row createExpectedRow(final boolean doubleToFloat, final DateTime timestamp, Object... vals)
   {
     Preconditions.checkArgument(vals.length % 2 == 0);
 
     Map<String, Object> theVals = Maps.newHashMap();
     for (int i = 0; i < vals.length; i += 2) {
-      final Object value = vals[i + 1];
-      theVals.put(
-          vals[i].toString(),
-          doubleToFloat && value instanceof Double ? (double) ((Double) value).floatValue() : value
-      );
+      theVals.put(vals[i].toString(), vals[i + 1]);
     }
 
     DateTime ts = new DateTime(timestamp);

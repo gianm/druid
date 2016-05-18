@@ -38,7 +38,7 @@ public class ConcurrentGrouper<KeyType extends Comparable<KeyType>> implements G
       final int concurrencyHint,
       final File spillDirectory,
       final ObjectMapper spillMapper,
-      final int spillEvery,
+      final int maxBufferGrouperSize,
       final KeySerdeFactory<KeyType> keySerdeFactory,
       final ColumnSelectorFactory columnSelectorFactory,
       final AggregatorFactory[] aggregatorFactories
@@ -59,7 +59,7 @@ public class ConcurrentGrouper<KeyType extends Comparable<KeyType>> implements G
               aggregatorFactories,
               spillDirectory,
               spillMapper,
-              spillEvery
+              maxBufferGrouperSize
           )
       );
     }

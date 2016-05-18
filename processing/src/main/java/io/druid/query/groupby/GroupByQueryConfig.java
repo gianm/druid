@@ -39,7 +39,7 @@ public class GroupByQueryConfig
 
   @JsonProperty
   // Not worth documenting, only used for tests
-  private int spillEvery = Integer.MAX_VALUE;
+  private int maxBufferGrouperSize = Integer.MAX_VALUE;
 
   @JsonProperty
   private int maxMergingDictionarySize = 20 * 1024 * 1024;
@@ -69,9 +69,9 @@ public class GroupByQueryConfig
     return maxResults;
   }
 
-  public int getSpillEvery()
+  public int getMaxBufferGrouperSize()
   {
-    return spillEvery;
+    return maxBufferGrouperSize;
   }
 
   public int getMaxMergingDictionarySize()

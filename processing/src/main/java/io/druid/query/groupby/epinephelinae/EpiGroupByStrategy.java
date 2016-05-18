@@ -160,7 +160,7 @@ public class EpiGroupByStrategy implements GroupByStrategy
                 if (query.getPostAggregatorSpecs().isEmpty()) {
                   newMap = ((MapBasedRow) row).getEvent();
                 } else {
-                  newMap = Maps.newHashMap(((MapBasedRow) row).getEvent());
+                  newMap = Maps.newLinkedHashMap(((MapBasedRow) row).getEvent());
 
                   for (PostAggregator postAggregator : query.getPostAggregatorSpecs()) {
                     newMap.put(postAggregator.getName(), postAggregator.compute(newMap));
@@ -198,6 +198,6 @@ public class EpiGroupByStrategy implements GroupByStrategy
       StorageAdapter storageAdapter
   )
   {
-    return EpiGroupByQueryEngine.process(query, storageAdapter, bufferPool);
+    return EpiGroupByQueryEngine.process(query, storageAdapter, bufferPool, configSupplier.get());
   }
 }

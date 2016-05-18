@@ -45,6 +45,7 @@ public class BufferGrouper<KeyType extends Comparable<KeyType>> implements Group
   private final int[] aggregatorOffsets;
   private final int bucketSize;
   private final int tableArenaSize;
+  private final int maxBufferGrouperSize; // Integer.MAX_VALUE in production, only used for unit tests
 
   // Buffer pointing to the current table (it moves around as the table grows)
   private ByteBuffer tableBuffer;
@@ -65,7 +66,8 @@ public class BufferGrouper<KeyType extends Comparable<KeyType>> implements Group
       final ByteBuffer buffer,
       final KeySerde<KeyType> keySerde,
       final ColumnSelectorFactory columnSelectorFactory,
-      final AggregatorFactory[] aggregatorFactories
+      final AggregatorFactory[] aggregatorFactories,
+      final int maxBufferGrouperSize
   )
   {
     this.buffer = buffer;
@@ -73,6 +75,7 @@ public class BufferGrouper<KeyType extends Comparable<KeyType>> implements Group
     this.keySize = keySerde.keySize();
     this.aggregators = new BufferAggregator[aggregatorFactories.length];
     this.aggregatorOffsets = new int[aggregatorFactories.length];
+    this.maxBufferGrouperSize = maxBufferGrouperSize;
 
     int offset = HASH_SIZE + keySize;
     for (int i = 0; i < aggregatorFactories.length; i++) {
@@ -99,11 +102,21 @@ public class BufferGrouper<KeyType extends Comparable<KeyType>> implements Group
         keySize
     );
 
-    int bucket = findBucket(tableBuffer, buckets, bucketSize, size < maxSize, keyBuffer, keySize, keyHash);
+    int bucket = findBucket(
+        tableBuffer,
+        buckets,
+        bucketSize,
+        size < Math.min(maxSize, maxBufferGrouperSize),
+        keyBuffer,
+        keySize,
+        keyHash
+    );
 
     if (bucket < 0) {
-      growIfPossible();
-      bucket = findBucket(tableBuffer, buckets, bucketSize, size < maxSize, keyBuffer, keySize, keyHash);
+      if (size < maxBufferGrouperSize) {
+        growIfPossible();
+        bucket = findBucket(tableBuffer, buckets, bucketSize, size < maxSize, keyBuffer, keySize, keyHash);
+      }
 
       if (bucket < 0) {
         return false;

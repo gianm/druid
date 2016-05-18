@@ -220,7 +220,7 @@ public class GroupByQueryRunnerTest
         return "epinephelinae";
       }
     };
-    final GroupByQueryConfig epinephelinaeSpillingConfig = new GroupByQueryConfig()
+    final GroupByQueryConfig epinephelinaeSmallBufferConfig = new GroupByQueryConfig()
     {
       @Override
       public String getDefaultStrategy()
@@ -229,9 +229,9 @@ public class GroupByQueryRunnerTest
       }
 
       @Override
-      public int getSpillEvery()
+      public int getMaxBufferGrouperSize()
       {
-        return 3;
+        return 2;
       }
     };
 
@@ -243,7 +243,7 @@ public class GroupByQueryRunnerTest
         defaultConfig,
         singleThreadedConfig,
         epinephelinaeConfig,
-        epinephelinaeSpillingConfig
+        epinephelinaeSmallBufferConfig
     );
 
     for (GroupByQueryConfig config : configs) {
@@ -1696,7 +1696,6 @@ public class GroupByQueryRunnerTest
     );
 
     Map<String, Object> context = Maps.newHashMap();
-    TestHelper.assertExpectedObjects(expectedResults, runner.run(fullQuery, context), "direct");
     TestHelper.assertExpectedObjects(expectedResults, mergedRunner.run(fullQuery, context), "merged");
 
     List<Row> allGranExpectedResults = Arrays.asList(
@@ -1711,7 +1710,6 @@ public class GroupByQueryRunnerTest
         GroupByQueryRunnerTestHelper.createExpectedRow("2011-04-02", "alias", "travel", "rows", 2L, "idx", 243L)
     );
 
-    TestHelper.assertExpectedObjects(allGranExpectedResults, runner.run(allGranQuery, context), "direct");
     TestHelper.assertExpectedObjects(allGranExpectedResults, mergedRunner.run(allGranQuery, context), "merged");
   }
 
@@ -3154,8 +3152,6 @@ public class GroupByQueryRunnerTest
     );
 
     Map<String, Object> context = Maps.newHashMap();
-    TestHelper.assertExpectedObjects(expectedResults, runner.run(query, context), "normal");
-
     QueryRunner<Row> mergeRunner = factory.getToolchest().mergeResults(runner);
     TestHelper.assertExpectedObjects(expectedResults, mergeRunner.run(query, context), "no-limit");
   }
@@ -3215,8 +3211,6 @@ public class GroupByQueryRunnerTest
     );
 
     Map<String, Object> context = Maps.newHashMap();
-    TestHelper.assertExpectedObjects(expectedResults, runner.run(query, context), "normal");
-
     QueryRunner<Row> mergeRunner = factory.getToolchest().mergeResults(runner);
     TestHelper.assertExpectedObjects(expectedResults, mergeRunner.run(query, context), "no-limit");
   }
@@ -4609,10 +4603,8 @@ public class GroupByQueryRunnerTest
         )
         .build();
 
-    boolean doubleToFloat = !config.getDefaultStrategy().equals("epinephelinae");
     List<Row> expectedResults = Arrays.asList(
         GroupByQueryRunnerTestHelper.createExpectedRow(
-            doubleToFloat,
             "1970-01-01",
             "dayOfWeek",
             "Friday",
@@ -4626,7 +4618,6 @@ public class GroupByQueryRunnerTest
             13337.574157714844
         ),
         GroupByQueryRunnerTestHelper.createExpectedRow(
-            doubleToFloat,
             "1970-01-01",
             "dayOfWeek",
             "Monday",
@@ -4640,7 +4631,6 @@ public class GroupByQueryRunnerTest
             13675.738830566406
         ),
         GroupByQueryRunnerTestHelper.createExpectedRow(
-            doubleToFloat,
             "1970-01-01",
             "dayOfWeek",
             "Saturday",
@@ -4654,7 +4644,6 @@ public class GroupByQueryRunnerTest
             13611.751281738281
         ),
         GroupByQueryRunnerTestHelper.createExpectedRow(
-            doubleToFloat,
             "1970-01-01",
             "dayOfWeek",
             "Sunday",
@@ -4668,7 +4657,6 @@ public class GroupByQueryRunnerTest
             13703.541015625
         ),
         GroupByQueryRunnerTestHelper.createExpectedRow(
-            doubleToFloat,
             "1970-01-01",
             "dayOfWeek",
             "Thursday",
@@ -4682,7 +4670,6 @@ public class GroupByQueryRunnerTest
             14406.127197265625
         ),
         GroupByQueryRunnerTestHelper.createExpectedRow(
-            doubleToFloat,
             "1970-01-01",
             "dayOfWeek",
             "Tuesday",
@@ -4696,7 +4683,6 @@ public class GroupByQueryRunnerTest
             13317.471435546875
         ),
         GroupByQueryRunnerTestHelper.createExpectedRow(
-            doubleToFloat,
             "1970-01-01",
             "dayOfWeek",
             "Wednesday",
@@ -4710,7 +4696,6 @@ public class GroupByQueryRunnerTest
             14398.368591308594
         ),
         GroupByQueryRunnerTestHelper.createExpectedRow(
-            doubleToFloat,
             "1970-01-01",
             "dayOfWeek",
             "Friday",
@@ -4724,7 +4709,6 @@ public class GroupByQueryRunnerTest
             27324.8623046875
         ),
         GroupByQueryRunnerTestHelper.createExpectedRow(
-            doubleToFloat,
             "1970-01-01",
             "dayOfWeek",
             "Monday",
@@ -4738,7 +4722,6 @@ public class GroupByQueryRunnerTest
             27646.58447265625
         ),
         GroupByQueryRunnerTestHelper.createExpectedRow(
-            doubleToFloat,
             "1970-01-01",
             "dayOfWeek",
             "Saturday",
@@ -4752,7 +4735,6 @@ public class GroupByQueryRunnerTest
             27847.83154296875
         ),
         GroupByQueryRunnerTestHelper.createExpectedRow(
-            doubleToFloat,
             "1970-01-01",
             "dayOfWeek",
             "Sunday",
@@ -4766,7 +4748,6 @@ public class GroupByQueryRunnerTest
             24818.223876953125
         ),
         GroupByQueryRunnerTestHelper.createExpectedRow(
-            doubleToFloat,
             "1970-01-01",
             "dayOfWeek",
             "Thursday",
@@ -4780,7 +4761,6 @@ public class GroupByQueryRunnerTest
             28591.748901367188
         ),
         GroupByQueryRunnerTestHelper.createExpectedRow(
-            doubleToFloat,
             "1970-01-01",
             "dayOfWeek",
             "Tuesday",
@@ -4794,7 +4774,6 @@ public class GroupByQueryRunnerTest
             26995.280639648438
         ),
         GroupByQueryRunnerTestHelper.createExpectedRow(
-            doubleToFloat,
             "1970-01-01",
             "dayOfWeek",
             "Wednesday",

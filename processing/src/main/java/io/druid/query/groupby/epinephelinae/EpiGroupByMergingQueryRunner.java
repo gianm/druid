@@ -152,7 +152,7 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
                     concurrencyHint,
                     spillDirectory,
                     spillMapper,
-                    config.getSpillEvery(),
+                    config.getMaxBufferGrouperSize(),
                     keySerdeFactory,
                     columnSelectorFactory,
                     combiningAggregatorFactories
@@ -237,7 +237,7 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
                       @Override
                       public Row apply(Grouper.Entry<GroupByMergingKey> entry)
                       {
-                        Map<String, Object> theMap = Maps.newHashMap();
+                        Map<String, Object> theMap = Maps.newLinkedHashMap();
 
                         // Add dimensions.
                         for (int i = 0; i < entry.getKey().getDimensions().length; i++) {
