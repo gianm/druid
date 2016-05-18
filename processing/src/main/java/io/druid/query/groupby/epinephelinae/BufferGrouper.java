@@ -28,9 +28,12 @@ import io.druid.query.aggregation.BufferAggregator;
 import io.druid.segment.ColumnSelectorFactory;
 
 import java.nio.ByteBuffer;
+import java.util.AbstractList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.Iterator;
+import java.util.List;
 
 public class BufferGrouper<KeyType extends Comparable<KeyType>> implements Grouper<KeyType>
 {
@@ -189,17 +192,34 @@ public class BufferGrouper<KeyType extends Comparable<KeyType>> implements Group
   @Override
   public Iterator<Entry<KeyType>> iterator(final boolean sorted)
   {
+    final List<Integer> wrappedOffsets = new AbstractList<Integer>()
+    {
+      @Override
+      public Integer get(int index)
+      {
+        return buffer.getInt(tableArenaSize + index * Ints.BYTES);
+      }
+
+      @Override
+      public Integer set(int index, Integer element)
+      {
+        final Integer oldValue = get(index);
+        buffer.putInt(tableArenaSize + index * Ints.BYTES, element);
+        return oldValue;
+      }
+
+      @Override
+      public int size()
+      {
+        return size;
+      }
+    };
+
     if (sorted) {
       final KeyComparator comparator = keySerde.comparator();
 
-      // TODO(gianm): Sort offsets array in-place?
-      final Integer[] sortedOffsets = new Integer[size];
-      for (int i = 0; i < size; i++) {
-        sortedOffsets[i] = buffer.getInt(tableArenaSize + i * Ints.BYTES);
-      }
-
-      Arrays.sort(
-          sortedOffsets,
+      Collections.sort(
+          wrappedOffsets,
           new Comparator<Integer>()
           {
             @Override
@@ -228,7 +248,7 @@ public class BufferGrouper<KeyType extends Comparable<KeyType>> implements Group
         @Override
         public Entry<KeyType> next()
         {
-          return bucketEntryForOffset(sortedOffsets[curr++]);
+          return bucketEntryForOffset(wrappedOffsets.get(curr++));
         }
 
         @Override
