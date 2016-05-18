@@ -31,6 +31,7 @@ import io.druid.benchmark.datagen.BenchmarkSchemas;
 import io.druid.concurrent.Execs;
 import io.druid.data.input.InputRow;
 import io.druid.data.input.impl.DimensionsSpec;
+import io.druid.granularity.QueryGranularities;
 import io.druid.granularity.QueryGranularity;
 import io.druid.jackson.DefaultObjectMapper;
 import io.druid.offheap.OffheapBufferPool;
@@ -156,7 +157,7 @@ public class TopNBenchmark
 
       TopNQueryBuilder queryBuilderA = new TopNQueryBuilder()
           .dataSource("blah")
-          .granularity(QueryGranularity.ALL)
+          .granularity(QueryGranularities.ALL)
           .dimension("dimA")
           .metric("sumC")
           .intervals(intervalSpec)
@@ -241,7 +242,7 @@ public class TopNBenchmark
   {
     return new OnheapIncrementalIndex(
         new IncrementalIndexSchema.Builder()
-            .withQueryGranularity(QueryGranularity.NONE)
+            .withQueryGranularity(QueryGranularities.NONE)
             .withMetrics(schemaInfo.getAggsArray())
             .withDimensionsSpec(new DimensionsSpec(null, null, null))
             .build(),

@@ -34,7 +34,7 @@ import io.druid.concurrent.Execs;
 import io.druid.data.input.InputRow;
 import io.druid.data.input.Row;
 import io.druid.data.input.impl.DimensionsSpec;
-import io.druid.granularity.QueryGranularity;
+import io.druid.granularity.QueryGranularities;
 import io.druid.jackson.DefaultObjectMapper;
 import io.druid.offheap.OffheapBufferPool;
 import io.druid.query.FinalizeResultsQueryRunner;
@@ -43,7 +43,6 @@ import io.druid.query.QueryRunner;
 import io.druid.query.QueryRunnerFactory;
 import io.druid.query.QueryToolChest;
 import io.druid.query.aggregation.AggregatorFactory;
-import io.druid.query.aggregation.CountAggregatorFactory;
 import io.druid.query.aggregation.LongSumAggregatorFactory;
 import io.druid.query.aggregation.hyperloglog.HyperUniquesSerde;
 import io.druid.query.dimension.DefaultDimensionSpec;
@@ -66,7 +65,6 @@ import io.druid.segment.incremental.IncrementalIndex;
 import io.druid.segment.incremental.IncrementalIndexSchema;
 import io.druid.segment.incremental.OnheapIncrementalIndex;
 import io.druid.segment.serde.ComplexMetrics;
-
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.Fork;
@@ -164,7 +162,7 @@ public class GroupByBenchmark
           .setAggregatorSpecs(
               queryAggs
           )
-          .setGranularity(QueryGranularity.DAY)
+          .setGranularity(QueryGranularities.DAY)
           .build();
 
       basicQueries.put("A", queryA);
@@ -260,7 +258,7 @@ public class GroupByBenchmark
   {
     return new OnheapIncrementalIndex(
         new IncrementalIndexSchema.Builder()
-            .withQueryGranularity(QueryGranularity.NONE)
+            .withQueryGranularity(QueryGranularities.NONE)
             .withMetrics(schemaInfo.getAggsArray())
             .withDimensionsSpec(new DimensionsSpec(null, null, null))
             .build(),
@@ -283,6 +281,24 @@ public class GroupByBenchmark
     return Sequences.toList(queryResult, Lists.<T>newArrayList());
   }
 
+  @Benchmark
+  @BenchmarkMode(Mode.AverageTime)
+  @OutputTimeUnit(TimeUnit.MICROSECONDS)
+  public void processSingleIncrementalIndex(Blackhole blackhole) throws Exception
+  {
+    QueryRunner<Row> runner = QueryBenchmarkUtil.makeQueryRunner(
+        factory,
+        "incIndex",
+        new IncrementalIndexSegment(incIndexes.get(0), "incIndex")
+    );
+
+    Sequence<Row> queryResult = runner.run(query, Maps.<String, Object>newHashMap());
+    ArrayList<Row> results = Sequences.toList(queryResult, Lists.<Row>newArrayList());
+
+    for (Row result : results) {
+      blackhole.consume(result);
+    }
+  }
 
   @Benchmark
   @BenchmarkMode(Mode.AverageTime)
@@ -337,8 +353,6 @@ public class GroupByBenchmark
     for (Row result : results) {
       blackhole.consume(result);
     }
-
-    System.out.println("#results = " + results.size());
   }
 
   @Benchmark

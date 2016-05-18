@@ -31,7 +31,7 @@ import io.druid.benchmark.datagen.BenchmarkSchemas;
 import io.druid.concurrent.Execs;
 import io.druid.data.input.InputRow;
 import io.druid.data.input.impl.DimensionsSpec;
-import io.druid.granularity.QueryGranularity;
+import io.druid.granularity.QueryGranularities;
 import io.druid.jackson.DefaultObjectMapper;
 import io.druid.query.Druids;
 import io.druid.query.FinalizeResultsQueryRunner;
@@ -102,7 +102,7 @@ public class TimeseriesBenchmark
 
   @Param({"basic.A"})
   private String schemaAndQuery;
-  
+
   private static final int RNG_SEED = 9999;
   private static final IndexMergerV9 INDEX_MERGER_V9;
   private static final IndexIO INDEX_IO;
@@ -134,6 +134,7 @@ public class TimeseriesBenchmark
   }
 
   private static final Map<String, Map<String, TimeseriesQuery>> SCHEMA_QUERY_MAP = new LinkedHashMap<>();
+
   static {
     // queries for the basic schema
     Map<String, TimeseriesQuery> basicQueries = new LinkedHashMap<>();
@@ -152,7 +153,7 @@ public class TimeseriesBenchmark
       TimeseriesQuery queryA =
           Druids.newTimeseriesQueryBuilder()
                 .dataSource("blah")
-                .granularity(QueryGranularity.ALL)
+                .granularity(QueryGranularities.ALL)
                 .intervals(intervalSpec)
                 .aggregators(queryAggs)
                 .descending(false)
@@ -236,7 +237,7 @@ public class TimeseriesBenchmark
   {
     return new OnheapIncrementalIndex(
         new IncrementalIndexSchema.Builder()
-            .withQueryGranularity(QueryGranularity.NONE)
+            .withQueryGranularity(QueryGranularities.NONE)
             .withMetrics(schemaInfo.getAggsArray())
             .withDimensionsSpec(new DimensionsSpec(null, null, null))
             .build(),
@@ -319,7 +320,10 @@ public class TimeseriesBenchmark
     );
 
     Sequence<Result<TimeseriesResultValue>> queryResult = theRunner.run(query, Maps.<String, Object>newHashMap());
-    List<Result<TimeseriesResultValue>> results = Sequences.toList(queryResult, Lists.<Result<TimeseriesResultValue>>newArrayList());
+    List<Result<TimeseriesResultValue>> results = Sequences.toList(
+        queryResult,
+        Lists.<Result<TimeseriesResultValue>>newArrayList()
+    );
 
     for (Result<TimeseriesResultValue> result : results) {
       blackhole.consume(result);
