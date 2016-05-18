@@ -30,6 +30,7 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.io.Files;
+import com.google.common.primitives.Chars;
 import com.google.common.primitives.Ints;
 import com.google.common.primitives.Longs;
 import com.google.common.util.concurrent.Futures;
@@ -123,7 +124,8 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
     }
 
     final GroupByMergingKeySerdeFactory keySerdeFactory = new GroupByMergingKeySerdeFactory(
-        query.getDimensions().size()
+        query.getDimensions().size(),
+        config.getMaxMergingDictionarySize()
     );
     final GroupByMergingColumnSelectorFactory columnSelectorFactory = new GroupByMergingColumnSelectorFactory();
 
@@ -402,32 +404,43 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
   private static class GroupByMergingKeySerdeFactory implements Grouper.KeySerdeFactory<GroupByMergingKey>
   {
     private final int dimCount;
+    private final long maxDictionarySize;
 
-    public GroupByMergingKeySerdeFactory(int dimCount)
+    public GroupByMergingKeySerdeFactory(int dimCount, long maxDictionarySize)
     {
       this.dimCount = dimCount;
+      this.maxDictionarySize = maxDictionarySize;
     }
 
     @Override
     public Grouper.KeySerde<GroupByMergingKey> factorize()
     {
-      return new GroupByMergingKeySerde(dimCount);
+      return new GroupByMergingKeySerde(dimCount, maxDictionarySize);
     }
   }
 
   private static class GroupByMergingKeySerde implements Grouper.KeySerde<GroupByMergingKey>
   {
+    // Entry in dictionary, node pointer in reverseDictionary, hash + k/v/next pointer in reverseDictionary nodes
+    private static final int ROUGH_OVERHEAD_PER_DICTIONARY_ENTRY = Longs.BYTES * 5 + Ints.BYTES;
+
     private final int dimCount;
     private final int keySize;
     private final ByteBuffer keyBuffer;
     private final List<String> dictionary = Lists.newArrayList();
     private final Map<String, Integer> reverseDictionary = Maps.newHashMap();
 
+    // Size limiting for the dictionary, in (roughly estimated) bytes.
+    private final long maxDictionarySize;
+    private long currentEstimatedSize = 0;
+
+    // dictionary id -> its position if it were sorted by dictionary value
     private int[] sortableIds = null;
 
-    public GroupByMergingKeySerde(final int dimCount)
+    public GroupByMergingKeySerde(final int dimCount, final long maxDictionarySize)
     {
       this.dimCount = dimCount;
+      this.maxDictionarySize = maxDictionarySize;
       this.keySize = Longs.BYTES + dimCount * Ints.BYTES;
       this.keyBuffer = ByteBuffer.allocate(keySize);
     }
@@ -447,11 +460,14 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
     @Override
     public ByteBuffer toByteBuffer(GroupByMergingKey key)
     {
-      // TODO(gianm): Some way of enforcing a max dictionary size (spill when it gets too big)
       keyBuffer.rewind();
       keyBuffer.putLong(key.getTimestamp());
       for (int i = 0; i < key.getDimensions().length; i++) {
-        keyBuffer.putInt(addToDictionary(key.getDimensions()[i]));
+        final int id = addToDictionary(key.getDimensions()[i]);
+        if (id < 0) {
+          return null;
+        }
+        keyBuffer.putInt(id);
       }
       keyBuffer.flip();
       return keyBuffer;
@@ -515,15 +531,30 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
       dictionary.clear();
       reverseDictionary.clear();
       sortableIds = null;
+      currentEstimatedSize = 0;
     }
 
+    /**
+     * Adds s to the dictionary. If the dictionary's size limit would be exceeded by adding this key, then
+     * this returns -1.
+     *
+     * @param s a string
+     *
+     * @return id for this string, or -1
+     */
     private int addToDictionary(final String s)
     {
       Integer idx = reverseDictionary.get(s);
       if (idx == null) {
+        final long additionalEstimatedSize = (long) s.length() * Chars.BYTES + ROUGH_OVERHEAD_PER_DICTIONARY_ENTRY;
+        if (currentEstimatedSize + additionalEstimatedSize > maxDictionarySize) {
+          return -1;
+        }
+
         idx = dictionary.size();
         reverseDictionary.put(s, idx);
         dictionary.add(s);
+        currentEstimatedSize += additionalEstimatedSize;
       }
       return idx;
     }

@@ -94,6 +94,9 @@ public class BufferGrouper<KeyType extends Comparable<KeyType>> implements Group
   public boolean aggregate(KeyType key, int keyHash)
   {
     final ByteBuffer keyBuffer = keySerde.toByteBuffer(key);
+    if (keyBuffer == null) {
+      return false;
+    }
 
     Preconditions.checkArgument(
         keyBuffer.remaining() == keySize,

@@ -42,7 +42,7 @@ public class GroupByQueryConfig
   private int maxBufferGrouperSize = Integer.MAX_VALUE;
 
   @JsonProperty
-  private int maxMergingDictionarySize = 20 * 1024 * 1024;
+  private long maxMergingDictionarySize = 20 * 1024 * 1024;
 
   public String getDefaultStrategy()
   {
@@ -74,7 +74,7 @@ public class GroupByQueryConfig
     return maxBufferGrouperSize;
   }
 
-  public int getMaxMergingDictionarySize()
+  public long getMaxMergingDictionarySize()
   {
     return maxMergingDictionarySize;
   }

@@ -55,13 +55,13 @@ public interface Grouper<KeyType extends Comparable<KeyType>>
 
   /**
    * Iterate through entries. If a comparator is provided, do a sorted iteration.
-   *
+   * <p>
    * It is safe to call this method multiple times to get multiple iterators.
-   *
+   * <p>
    * Once this method is called, writes are no longer safe. After you have are done with the iterators returned by this
    * method, you should either call {@link #close()} (if you are done with the Grouper) or {@link #reset()} (if you
    * want to reuse it).
-   *
+   * <p>
    * If "sorted" is true then the iterator will return sorted results. It will use KeyType's natural ordering on
    * deserialized objects, and will use the {@link KeySerde#comparator()} on serialized objects. Woe be unto you
    * if these comparators are not equivalent.
@@ -121,9 +121,13 @@ public interface Grouper<KeyType extends Comparable<KeyType>>
      * Serialize a key. This will be called by the {@link #aggregate(Comparable)} method. The buffer will not
      * be retained after the aggregate method returns, so reusing buffers is OK.
      *
+     * This method may return null, which indicates that some internal resource limit has been reached and
+     * no more keys can be generated. In this situation you can call {@link #reset()} and try again, although
+     * beware the caveats on that method.
+     *
      * @param key key object
      *
-     * @return serialized key
+     * @return serialized key, or null if we are unable to serialize more keys due to resource limits
      */
     ByteBuffer toByteBuffer(T key);
 
@@ -146,9 +150,8 @@ public interface Grouper<KeyType extends Comparable<KeyType>>
     KeyComparator comparator();
 
     /**
-     * Reset the keySerde to its initial state. After this method is called, it's okay for
-     * {@link #fromByteBuffer(ByteBuffer, int)} and {@link #comparator()} to no longer work properly on
-     * previously-serialized keys.
+     * Reset the keySerde to its initial state. After this method is called, {@link #fromByteBuffer(ByteBuffer, int)}
+     * and {@link #comparator()} may no longer work properly on previously-serialized keys.
      */
     void reset();
   }

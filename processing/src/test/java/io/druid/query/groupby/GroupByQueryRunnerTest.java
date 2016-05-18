@@ -234,6 +234,20 @@ public class GroupByQueryRunnerTest
         return 2;
       }
     };
+    final GroupByQueryConfig epinephelinaeSmallDictionaryConfig = new GroupByQueryConfig()
+    {
+      @Override
+      public String getDefaultStrategy()
+      {
+        return "epinephelinae";
+      }
+
+      @Override
+      public long getMaxMergingDictionarySize()
+      {
+        return 200;
+      }
+    };
 
     defaultConfig.setMaxIntermediateRows(10000);
     singleThreadedConfig.setMaxIntermediateRows(10000);
@@ -243,7 +257,8 @@ public class GroupByQueryRunnerTest
         defaultConfig,
         singleThreadedConfig,
         epinephelinaeConfig,
-        epinephelinaeSmallBufferConfig
+        epinephelinaeSmallBufferConfig,
+        epinephelinaeSmallDictionaryConfig
     );
 
     for (GroupByQueryConfig config : configs) {
