@@ -320,6 +320,26 @@ public class GroupByBenchmark
     }
   }
 
+  @Benchmark
+  @BenchmarkMode(Mode.AverageTime)
+  @OutputTimeUnit(TimeUnit.MICROSECONDS)
+  public void processSingleQueryableIndex(Blackhole blackhole) throws Exception
+  {
+    QueryRunner<Row> runner = QueryBenchmarkUtil.makeQueryRunner(
+        factory,
+        "qIndex",
+        new QueryableIndexSegment("qIndex", qIndexes.get(0))
+    );
+
+    Sequence<Row> queryResult = runner.run(query, Maps.<String, Object>newHashMap());
+    final ArrayList<Row> results = Sequences.toList(queryResult, Lists.<Row>newArrayList());
+
+    for (Row result : results) {
+      blackhole.consume(result);
+    }
+
+    System.out.println("#results = " + results.size());
+  }
 
   @Benchmark
   @BenchmarkMode(Mode.AverageTime)
