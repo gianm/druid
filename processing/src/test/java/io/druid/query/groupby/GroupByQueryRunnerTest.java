@@ -19,8 +19,7 @@
 
 package io.druid.query.groupby;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.common.base.Function;
+import com.fasterxml.jackson.dataformat.smile.SmileFactory;
 import com.google.common.base.Supplier;
 import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableList;
@@ -29,10 +28,13 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Ordering;
+import com.google.common.util.concurrent.MoreExecutors;
 import com.metamx.common.ISE;
+import com.metamx.common.guava.MergeSequence;
 import com.metamx.common.guava.Sequence;
 import com.metamx.common.guava.Sequences;
 import com.metamx.common.parsers.ParseException;
+import io.druid.collections.BlockingPool;
 import io.druid.collections.StupidPool;
 import io.druid.data.input.Row;
 import io.druid.granularity.PeriodGranularity;
@@ -41,6 +43,7 @@ import io.druid.jackson.DefaultObjectMapper;
 import io.druid.js.JavaScriptConfig;
 import io.druid.query.BySegmentResultValue;
 import io.druid.query.BySegmentResultValueClass;
+import io.druid.query.DruidProcessingConfig;
 import io.druid.query.Druids;
 import io.druid.query.FinalizeResultsQueryRunner;
 import io.druid.query.Query;
@@ -48,7 +51,6 @@ import io.druid.query.QueryRunner;
 import io.druid.query.QueryRunnerTestHelper;
 import io.druid.query.QueryToolChest;
 import io.druid.query.Result;
-import io.druid.query.TestQueryRunners;
 import io.druid.query.aggregation.AggregatorFactory;
 import io.druid.query.aggregation.DoubleMaxAggregatorFactory;
 import io.druid.query.aggregation.DoubleSumAggregatorFactory;
@@ -79,6 +81,7 @@ import io.druid.query.filter.OrDimFilter;
 import io.druid.query.filter.RegexDimFilter;
 import io.druid.query.filter.SearchQueryDimFilter;
 import io.druid.query.filter.SelectorDimFilter;
+import io.druid.query.groupby.epinephelinae.EpiGroupByStrategy;
 import io.druid.query.groupby.having.EqualToHavingSpec;
 import io.druid.query.groupby.having.GreaterThanHavingSpec;
 import io.druid.query.groupby.having.HavingSpec;
@@ -86,6 +89,8 @@ import io.druid.query.groupby.having.OrHavingSpec;
 import io.druid.query.groupby.orderby.DefaultLimitSpec;
 import io.druid.query.groupby.orderby.LimitSpec;
 import io.druid.query.groupby.orderby.OrderByColumnSpec;
+import io.druid.query.groupby.strategy.GroupByStrategySelector;
+import io.druid.query.groupby.strategy.OldFaithfulGroupByStrategy;
 import io.druid.query.lookup.LookupExtractionFn;
 import io.druid.query.ordering.StringComparators;
 import io.druid.query.search.search.ContainsSearchQuerySpec;
@@ -97,7 +102,6 @@ import org.joda.time.DateTimeZone;
 import org.joda.time.Interval;
 import org.joda.time.Period;
 import org.junit.Assert;
-import org.junit.Before;
 import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
@@ -105,7 +109,6 @@ import org.junit.rules.ExpectedException;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 
-import javax.annotation.Nullable;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -124,50 +127,84 @@ public class GroupByQueryRunnerTest
 {
   private final QueryRunner<Row> runner;
   private GroupByQueryRunnerFactory factory;
-  private Supplier<GroupByQueryConfig> configSupplier;
+  private GroupByQueryConfig config;
 
   @Rule
   public ExpectedException expectedException = ExpectedException.none();
 
-  @Before
-  public void setUp() throws Exception
+  public static GroupByQueryRunnerFactory makeQueryRunnerFactory(
+      final GroupByQueryConfig config
+  )
   {
-    configSupplier = Suppliers.ofInstance(new GroupByQueryConfig());
-  }
-
-  @Parameterized.Parameters
-  public static Collection<?> constructorFeeder() throws IOException
-  {
-    final ObjectMapper mapper = new DefaultObjectMapper();
-    final StupidPool<ByteBuffer> pool = new StupidPool<>(
+    final Supplier<GroupByQueryConfig> configSupplier = Suppliers.ofInstance(config);
+    final StupidPool<ByteBuffer> bufferPool = new StupidPool<>(
         new Supplier<ByteBuffer>()
         {
           @Override
           public ByteBuffer get()
           {
-            return ByteBuffer.allocate(1024 * 1024);
+            return ByteBuffer.allocate(10 * 1024 * 1024);
           }
         }
     );
-
-    final GroupByQueryConfig config = new GroupByQueryConfig();
-    config.setMaxIntermediateRows(10000);
-
-    final Supplier<GroupByQueryConfig> configSupplier = Suppliers.ofInstance(config);
-    final GroupByQueryEngine engine = new GroupByQueryEngine(configSupplier, pool);
-
-    final GroupByQueryRunnerFactory factory = new GroupByQueryRunnerFactory(
-        engine,
-        QueryRunnerTestHelper.NOOP_QUERYWATCHER,
-        configSupplier,
-        new GroupByQueryQueryToolChest(
-            configSupplier, mapper, engine, TestQueryRunners.pool,
-            QueryRunnerTestHelper.NoopIntervalChunkingQueryRunnerDecorator()
-        ),
-        TestQueryRunners.pool
+    final BlockingPool<ByteBuffer> mergeBufferPool = new BlockingPool<>(
+        new Supplier<ByteBuffer>()
+        {
+          @Override
+          public ByteBuffer get()
+          {
+            return ByteBuffer.allocate(10 * 1024 * 1024);
+          }
+        },
+        4
     );
+    final GroupByStrategySelector strategySelector = new GroupByStrategySelector(
+        configSupplier,
+        new OldFaithfulGroupByStrategy(
+            configSupplier,
+            new GroupByQueryEngine(configSupplier, bufferPool),
+            QueryRunnerTestHelper.NOOP_QUERYWATCHER,
+            bufferPool
+        ),
+        new EpiGroupByStrategy(
+            new DruidProcessingConfig()
+            {
+              @Override
+              public String getFormatString()
+              {
+                return null;
+              }
 
-    GroupByQueryConfig singleThreadedConfig = new GroupByQueryConfig()
+              @Override
+              public int getNumThreads()
+              {
+                return 2;
+              }
+            },
+            configSupplier,
+            bufferPool,
+            mergeBufferPool,
+            new DefaultObjectMapper(new SmileFactory()),
+            QueryRunnerTestHelper.NOOP_QUERYWATCHER
+        )
+    );
+    final GroupByQueryQueryToolChest toolChest = new GroupByQueryQueryToolChest(
+        configSupplier,
+        strategySelector,
+        bufferPool,
+        QueryRunnerTestHelper.NoopIntervalChunkingQueryRunnerDecorator()
+    );
+    return new GroupByQueryRunnerFactory(
+        strategySelector,
+        toolChest
+    );
+  }
+
+  @Parameterized.Parameters
+  public static Collection<?> constructorFeeder() throws IOException
+  {
+    final GroupByQueryConfig defaultConfig = new GroupByQueryConfig();
+    final GroupByQueryConfig singleThreadedConfig = new GroupByQueryConfig()
     {
       @Override
       public boolean isSingleThreaded()
@@ -175,50 +212,70 @@ public class GroupByQueryRunnerTest
         return true;
       }
     };
-    singleThreadedConfig.setMaxIntermediateRows(10000);
-
-    final Supplier<GroupByQueryConfig> singleThreadedConfigSupplier = Suppliers.ofInstance(singleThreadedConfig);
-    final GroupByQueryEngine singleThreadEngine = new GroupByQueryEngine(singleThreadedConfigSupplier, pool);
-
-    final GroupByQueryRunnerFactory singleThreadFactory = new GroupByQueryRunnerFactory(
-        singleThreadEngine,
-        QueryRunnerTestHelper.NOOP_QUERYWATCHER,
-        singleThreadedConfigSupplier,
-        new GroupByQueryQueryToolChest(
-            singleThreadedConfigSupplier, mapper, singleThreadEngine, pool,
-            QueryRunnerTestHelper.NoopIntervalChunkingQueryRunnerDecorator()
-        ),
-        pool
-    );
-
-
-    Function<Object, Object> function = new Function<Object, Object>()
+    final GroupByQueryConfig epinephelinaeConfig = new GroupByQueryConfig()
     {
       @Override
-      public Object apply(@Nullable Object input)
+      public String getDefaultStrategy()
       {
-        return new Object[]{factory, input};
+        return "epinephelinae";
+      }
+    };
+    final GroupByQueryConfig epinephelinaeSmallBufferConfig = new GroupByQueryConfig()
+    {
+      @Override
+      public String getDefaultStrategy()
+      {
+        return "epinephelinae";
+      }
+
+      @Override
+      public int getMaxBufferGrouperSize()
+      {
+        return 2;
+      }
+    };
+    final GroupByQueryConfig epinephelinaeSmallDictionaryConfig = new GroupByQueryConfig()
+    {
+      @Override
+      public String getDefaultStrategy()
+      {
+        return "epinephelinae";
+      }
+
+      @Override
+      public long getMaxMergingDictionarySize()
+      {
+        return 400;
       }
     };
 
-    return Lists.newArrayList(
-        Iterables.concat(
-            Iterables.transform(
-                QueryRunnerTestHelper.makeQueryRunners(factory),
-                function
-            ),
-            Iterables.transform(
-                QueryRunnerTestHelper.makeQueryRunners(singleThreadFactory),
-                function
-            )
-        )
+    defaultConfig.setMaxIntermediateRows(10000);
+    singleThreadedConfig.setMaxIntermediateRows(10000);
+
+    final List<Object[]> constructors = Lists.newArrayList();
+    final List<GroupByQueryConfig> configs = ImmutableList.of(
+        defaultConfig,
+        singleThreadedConfig,
+        epinephelinaeConfig,
+        epinephelinaeSmallBufferConfig,
+        epinephelinaeSmallDictionaryConfig
     );
+
+    for (GroupByQueryConfig config : configs) {
+      final GroupByQueryRunnerFactory factory = makeQueryRunnerFactory(config);
+      for (QueryRunner<Row> runner : QueryRunnerTestHelper.makeQueryRunners(factory)) {
+        constructors.add(new Object[]{config, factory, runner});
+      }
+    }
+
+    return constructors;
   }
 
-  public GroupByQueryRunnerTest(GroupByQueryRunnerFactory factory, QueryRunner runner)
+  public GroupByQueryRunnerTest(GroupByQueryConfig config, GroupByQueryRunnerFactory factory, QueryRunner runner)
   {
+    this.config = config;
     this.factory = factory;
-    this.runner = runner;
+    this.runner = factory.mergeRunners(MoreExecutors.sameThreadExecutor(), ImmutableList.<QueryRunner<Row>>of(runner));
   }
 
   @Test
@@ -387,7 +444,7 @@ public class GroupByQueryRunnerTest
     TestHelper.assertExpectedObjects(expectedResults, results, "");
   }
 
-  @Test(expected = ISE.class)
+  @Test
   public void testGroupByMaxRowsLimitContextOverrid()
   {
     GroupByQuery query = GroupByQuery
@@ -404,6 +461,10 @@ public class GroupByQueryRunnerTest
         .setGranularity(QueryRunnerTestHelper.dayGran)
         .setContext(ImmutableMap.<String, Object>of("maxResults", 1))
         .build();
+
+    if (!config.getDefaultStrategy().equals("epinephelinae")) {
+      expectedException.expect(ISE.class);
+    }
 
     GroupByQueryRunnerTestHelper.runQuery(factory, runner, query);
   }
@@ -962,6 +1023,7 @@ public class GroupByQueryRunnerTest
   }
 
   @Test
+  @Ignore
   /**
    * This test exists only to show what the current behavior is and not necessarily to define that this is
    * correct behavior.  In fact, the behavior when returning the empty string from a DimExtractionFn is, by
@@ -1267,7 +1329,12 @@ public class GroupByQueryRunnerTest
             final Query query2 = query.withQuerySegmentSpec(
                 new MultipleIntervalSegmentSpec(Lists.newArrayList(new Interval("2011-04-03/2011-04-04")))
             );
-            return Sequences.concat(runner.run(query1, responseContext), runner.run(query2, responseContext));
+            return new MergeSequence(
+                query.getResultOrdering(),
+                Sequences.simple(
+                    Arrays.asList(runner.run(query1, responseContext), runner.run(query2, responseContext))
+                )
+            );
           }
         }
     );
@@ -1285,7 +1352,6 @@ public class GroupByQueryRunnerTest
     );
 
     Map<String, Object> context = Maps.newHashMap();
-    TestHelper.assertExpectedObjects(expectedResults, runner.run(fullQuery, context), "direct");
     TestHelper.assertExpectedObjects(expectedResults, mergedRunner.run(fullQuery, context), "merged");
 
     List<Row> allGranExpectedResults = Arrays.asList(
@@ -1300,7 +1366,6 @@ public class GroupByQueryRunnerTest
         GroupByQueryRunnerTestHelper.createExpectedRow("2011-04-02", "alias", "travel", "rows", 2L, "idx", 243L)
     );
 
-    TestHelper.assertExpectedObjects(allGranExpectedResults, runner.run(allGranQuery, context), "direct");
     TestHelper.assertExpectedObjects(allGranExpectedResults, mergedRunner.run(allGranQuery, context), "merged");
   }
 
@@ -1511,7 +1576,12 @@ public class GroupByQueryRunnerTest
             final Query query2 = query.withQuerySegmentSpec(
                 new MultipleIntervalSegmentSpec(Lists.newArrayList(new Interval("2011-04-03/2011-04-04")))
             );
-            return Sequences.concat(runner.run(query1, responseContext), runner.run(query2, responseContext));
+            return new MergeSequence(
+                query.getResultOrdering(),
+                Sequences.simple(
+                    Arrays.asList(runner.run(query1, responseContext), runner.run(query2, responseContext))
+                )
+            );
           }
         }
     );
@@ -2282,7 +2352,12 @@ public class GroupByQueryRunnerTest
             final Query query2 = query.withQuerySegmentSpec(
                 new MultipleIntervalSegmentSpec(Lists.newArrayList(new Interval("2011-04-03/2011-04-04")))
             );
-            return Sequences.concat(runner.run(query1, responseContext), runner.run(query2, responseContext));
+            return new MergeSequence(
+                query.getResultOrdering(),
+                Sequences.simple(
+                    Arrays.asList(runner.run(query1, responseContext), runner.run(query2, responseContext))
+                )
+            );
           }
         }
     );
@@ -2519,7 +2594,12 @@ public class GroupByQueryRunnerTest
             final Query query2 = query.withQuerySegmentSpec(
                 new MultipleIntervalSegmentSpec(Lists.newArrayList(new Interval("2011-04-03/2011-04-04")))
             );
-            return Sequences.concat(runner.run(query1, responseContext), runner.run(query2, responseContext));
+            return new MergeSequence(
+                query.getResultOrdering(),
+                Sequences.simple(
+                    Arrays.asList(runner.run(query1, responseContext), runner.run(query2, responseContext))
+                )
+            );
           }
         }
     );
@@ -2623,9 +2703,11 @@ public class GroupByQueryRunnerTest
             final Query query2 = query.withQuerySegmentSpec(
                 new MultipleIntervalSegmentSpec(Lists.newArrayList(new Interval("2011-04-03/2011-04-04")))
             );
-            return Sequences.concat(
-                runner.run(query1, responseContext),
-                runner.run(query2, responseContext)
+            return new MergeSequence(
+                query.getResultOrdering(),
+                Sequences.simple(
+                    Arrays.asList(runner.run(query1, responseContext), runner.run(query2, responseContext))
+                )
             );
           }
         }
@@ -2666,27 +2748,7 @@ public class GroupByQueryRunnerTest
         GroupByQueryRunnerTestHelper.createExpectedRow("2011-04-01", "quality", "automotive", "rows", 2L)
     );
 
-    final GroupByQueryEngine engine = new GroupByQueryEngine(
-        configSupplier,
-        new StupidPool<>(
-            new Supplier<ByteBuffer>()
-            {
-              @Override
-              public ByteBuffer get()
-              {
-                return ByteBuffer.allocate(1024 * 1024);
-              }
-            }
-        )
-    );
-
-    QueryRunner<Row> mergeRunner = new GroupByQueryQueryToolChest(
-        configSupplier,
-        new DefaultObjectMapper(),
-        engine,
-        TestQueryRunners.pool,
-        QueryRunnerTestHelper.NoopIntervalChunkingQueryRunnerDecorator()
-    ).mergeResults(runner);
+    QueryRunner<Row> mergeRunner = factory.getToolchest().mergeResults(runner);
     Map<String, Object> context = Maps.newHashMap();
     TestHelper.assertExpectedObjects(expectedResults, mergeRunner.run(query, context), "no-limit");
   }
@@ -2746,28 +2808,7 @@ public class GroupByQueryRunnerTest
     );
 
     Map<String, Object> context = Maps.newHashMap();
-    TestHelper.assertExpectedObjects(expectedResults, runner.run(query, context), "normal");
-    final GroupByQueryEngine engine = new GroupByQueryEngine(
-        configSupplier,
-        new StupidPool<>(
-            new Supplier<ByteBuffer>()
-            {
-              @Override
-              public ByteBuffer get()
-              {
-                return ByteBuffer.allocate(1024 * 1024);
-              }
-            }
-        )
-    );
-
-    QueryRunner<Row> mergeRunner = new GroupByQueryQueryToolChest(
-        configSupplier,
-        new DefaultObjectMapper(),
-        engine,
-        TestQueryRunners.pool,
-        QueryRunnerTestHelper.NoopIntervalChunkingQueryRunnerDecorator()
-    ).mergeResults(runner);
+    QueryRunner<Row> mergeRunner = factory.getToolchest().mergeResults(runner);
     TestHelper.assertExpectedObjects(expectedResults, mergeRunner.run(query, context), "no-limit");
   }
 
@@ -2826,28 +2867,7 @@ public class GroupByQueryRunnerTest
     );
 
     Map<String, Object> context = Maps.newHashMap();
-    TestHelper.assertExpectedObjects(expectedResults, runner.run(query, context), "normal");
-    final GroupByQueryEngine engine = new GroupByQueryEngine(
-        configSupplier,
-        new StupidPool<>(
-            new Supplier<ByteBuffer>()
-            {
-              @Override
-              public ByteBuffer get()
-              {
-                return ByteBuffer.allocate(1024 * 1024);
-              }
-            }
-        )
-    );
-
-    QueryRunner<Row> mergeRunner = new GroupByQueryQueryToolChest(
-        configSupplier,
-        new DefaultObjectMapper(),
-        engine,
-        TestQueryRunners.pool,
-        QueryRunnerTestHelper.NoopIntervalChunkingQueryRunnerDecorator()
-    ).mergeResults(runner);
+    QueryRunner<Row> mergeRunner = factory.getToolchest().mergeResults(runner);
     TestHelper.assertExpectedObjects(expectedResults, mergeRunner.run(query, context), "no-limit");
   }
 

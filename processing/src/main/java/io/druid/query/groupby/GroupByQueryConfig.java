@@ -26,6 +26,9 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 public class GroupByQueryConfig
 {
   @JsonProperty
+  private String defaultStrategy = "oldFaithful";
+
+  @JsonProperty
   private boolean singleThreaded = false;
 
   @JsonProperty
@@ -33,6 +36,23 @@ public class GroupByQueryConfig
 
   @JsonProperty
   private int maxResults = 500000;
+
+  @JsonProperty
+  // Not documented, only used for tests to force spilling
+  private int maxBufferGrouperSize = Integer.MAX_VALUE;
+
+  @JsonProperty
+  // Size of on-heap string dictionary for merging, per-query; when exceeded, partial results will be spilled to disk
+  private long maxMergingDictionarySize = 25 * 1024 * 1024;
+
+  @JsonProperty
+  // Max on-disk temporary storage, per-query; when exceeded, the query fails
+  private long maxOnDiskStorage = 1024 * 1024 * 1024;
+
+  public String getDefaultStrategy()
+  {
+    return defaultStrategy;
+  }
 
   public boolean isSingleThreaded()
   {
@@ -52,5 +72,20 @@ public class GroupByQueryConfig
   public int getMaxResults()
   {
     return maxResults;
+  }
+
+  public int getMaxBufferGrouperSize()
+  {
+    return maxBufferGrouperSize;
+  }
+
+  public long getMaxMergingDictionarySize()
+  {
+    return maxMergingDictionarySize;
+  }
+
+  public long getMaxOnDiskStorage()
+  {
+    return maxOnDiskStorage;
   }
 }
