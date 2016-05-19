@@ -59,6 +59,11 @@ public class GroupByQueryConfig
     return singleThreaded;
   }
 
+  public void setSingleThreaded(boolean singleThreaded)
+  {
+    this.singleThreaded = singleThreaded;
+  }
+
   public int getMaxIntermediateRows()
   {
     return maxIntermediateRows;
@@ -87,5 +92,10 @@ public class GroupByQueryConfig
   public long getMaxOnDiskStorage()
   {
     return maxOnDiskStorage;
+  }
+
+  public void setMaxResults(int maxResults)
+  {
+    this.maxResults = maxResults;
   }
 }
