@@ -318,7 +318,7 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
     }
   }
 
-  public static class GroupByMergingKey implements Comparable<GroupByMergingKey>
+  private static class GroupByMergingKey implements Comparable<GroupByMergingKey>
   {
     private final long timestamp;
     private final String[] dimensions;
@@ -419,7 +419,7 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
     }
   }
 
-  public static class GroupByMergingKeySerde implements Grouper.KeySerde<GroupByMergingKey>
+  private static class GroupByMergingKeySerde implements Grouper.KeySerde<GroupByMergingKey>
   {
     // Entry in dictionary, node pointer in reverseDictionary, hash + k/v/next pointer in reverseDictionary nodes
     private static final int ROUGH_OVERHEAD_PER_DICTIONARY_ENTRY = Longs.BYTES * 5 + Ints.BYTES;
@@ -560,7 +560,7 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
     }
   }
 
-  public static class GroupByMergingColumnSelectorFactory implements ColumnSelectorFactory
+  private static class GroupByMergingColumnSelectorFactory implements ColumnSelectorFactory
   {
     private ThreadLocal<Row> row = new ThreadLocal<>();
 

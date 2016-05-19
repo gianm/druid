@@ -19,11 +19,7 @@
 
 package io.druid.benchmark;
 
-import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Iterators;
-import com.google.common.collect.Lists;
-import com.metamx.common.ISE;
 import io.druid.data.input.InputRow;
 import io.druid.data.input.MapBasedInputRow;
 import io.druid.granularity.QueryGranularities;
@@ -31,14 +27,10 @@ import io.druid.query.aggregation.AggregatorFactory;
 import io.druid.query.aggregation.CountAggregatorFactory;
 import io.druid.query.aggregation.DoubleSumAggregatorFactory;
 import io.druid.query.aggregation.LongSumAggregatorFactory;
-import io.druid.query.groupby.epinephelinae.BufferGrouper;
-import io.druid.query.groupby.epinephelinae.EpiGroupByMergingQueryRunner;
-import io.druid.query.groupby.epinephelinae.Grouper;
 import io.druid.segment.incremental.IncrementalIndex;
 import io.druid.segment.incremental.OnheapIncrementalIndex;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
-import org.openjdk.jmh.annotations.Fork;
 import org.openjdk.jmh.annotations.Level;
 import org.openjdk.jmh.annotations.Mode;
 import org.openjdk.jmh.annotations.OperationsPerInvocation;
@@ -49,22 +41,17 @@ import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.infra.Blackhole;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
 
 @State(Scope.Benchmark)
-@Fork(value = 1)
 public class IncrementalIndexAddRowsBenchmark
 {
   private IncrementalIndex incIndex;
   private IncrementalIndex incFloatIndex;
   private IncrementalIndex incStrIndex;
-  private EpiGroupByMergingQueryRunner.GroupByMergingColumnSelectorFactory columnSelectorFactory;
-  private Grouper<EpiGroupByMergingQueryRunner.GroupByMergingKey> grouper;
   private static AggregatorFactory[] aggs;
   static final int dimensionCount = 8;
   private Random rng;
@@ -169,14 +156,6 @@ public class IncrementalIndexAddRowsBenchmark
     incIndex = makeIncIndex();
     incFloatIndex = makeIncIndex();
     incStrIndex = makeIncIndex();
-    columnSelectorFactory = new EpiGroupByMergingQueryRunner.GroupByMergingColumnSelectorFactory();
-    grouper = new BufferGrouper<>(
-        ByteBuffer.allocateDirect(1024 * 1024 * 1024),
-        new EpiGroupByMergingQueryRunner.GroupByMergingKeySerde(dimensionCount, Long.MAX_VALUE),
-        columnSelectorFactory,
-        aggs,
-        Integer.MAX_VALUE
-    );
   }
 
   @Benchmark
@@ -209,33 +188,12 @@ public class IncrementalIndexAddRowsBenchmark
   @BenchmarkMode(Mode.AverageTime)
   @OutputTimeUnit(TimeUnit.MICROSECONDS)
   @OperationsPerInvocation(maxRows)
-  public void normalStrings() throws Exception
+  public void normalStrings(Blackhole blackhole) throws Exception
   {
     for (int i = 0; i < maxRows; i++) {
       InputRow row = stringRows.get(i);
-      incStrIndex.add(row);
+      int rv = incStrIndex.add(row);
+      blackhole.consume(rv);
     }
-    System.out.println(Iterators.size(incStrIndex.iterator()));
-  }
-
-  @Benchmark
-  @BenchmarkMode(Mode.AverageTime)
-  @OutputTimeUnit(TimeUnit.MICROSECONDS)
-  @OperationsPerInvocation(maxRows)
-  public void normalStringsBufferGrouper() throws Exception
-  {
-    for (int i = 0; i < maxRows; i++) {
-      InputRow row = stringRows.get(i);
-      columnSelectorFactory.setRow(row);
-      final String[] dimensions = new String[dimensionCount];
-      for (int j = 0; j < dimensions.length; j++) {
-        final Object dimValue = row.getRaw(row.getDimensions().get(j));
-        dimensions[j] = Strings.nullToEmpty((String) dimValue);
-      }
-      if (!grouper.aggregate(new EpiGroupByMergingQueryRunner.GroupByMergingKey(row.getTimestampFromEpoch(), dimensions))) {
-        throw new ISE("wtf");
-      }
-    }
-    System.out.println(Iterators.size(grouper.iterator(true)));
   }
 }
