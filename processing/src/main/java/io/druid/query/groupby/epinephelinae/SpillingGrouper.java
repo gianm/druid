@@ -30,14 +30,15 @@ import com.metamx.common.guava.CloseQuietly;
 import com.metamx.common.logger.Logger;
 import io.druid.query.aggregation.AggregatorFactory;
 import io.druid.segment.ColumnSelectorFactory;
+import net.jpountz.lz4.LZ4BlockInputStream;
+import net.jpountz.lz4.LZ4BlockOutputStream;
 
 import java.io.Closeable;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
-import java.util.EnumSet;
 import java.util.Iterator;
 import java.util.List;
 
@@ -146,16 +147,10 @@ public class SpillingGrouper<KeyType extends Comparable<KeyType>> implements Gro
 
   private void spill()
   {
-    // TODO(gianm): Compress spill files?
-
-    final EnumSet<StandardOpenOption> openOptions = EnumSet.of(
-        StandardOpenOption.CREATE_NEW,
-        StandardOpenOption.WRITE
-    );
-
     try (
         final LimitedTemporaryStorage.LimitedOutputStream out = temporaryStorage.createFile();
-        final JsonGenerator jsonGenerator = spillMapper.getFactory().createGenerator(out)
+        final LZ4BlockOutputStream compressedOut = new LZ4BlockOutputStream(out);
+        final JsonGenerator jsonGenerator = spillMapper.getFactory().createGenerator(compressedOut)
     ) {
       files.add(out.getFile());
       final Iterator<Entry<KeyType>> it = grouper.iterator(true);
@@ -174,7 +169,7 @@ public class SpillingGrouper<KeyType extends Comparable<KeyType>> implements Gro
   {
     try {
       return spillMapper.readValues(
-          spillMapper.getFactory().createParser(file),
+          spillMapper.getFactory().createParser(new LZ4BlockInputStream(new FileInputStream(file))),
           spillMapper.getTypeFactory().constructParametricType(Entry.class, keyClazz)
       );
     }
