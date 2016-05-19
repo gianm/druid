@@ -29,12 +29,32 @@ import io.druid.segment.ColumnSelectorFactory;
 
 import java.nio.ByteBuffer;
 import java.util.AbstractList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
 
+/**
+ * Grouper based around a hash table and companion array in a single ByteBuffer. Not thread-safe.
+ *
+ * The buffer has two parts: a table arena (offset 0 to tableArenaSize) and an array containing pointers objects in
+ * the table (tableArenaSize until the end of the buffer).
+ *
+ * The table uses open addressing with linear probing on collisions. Each bucket contains the key hash (with the high
+ * bit set to signify the bucket is used), the serialized key (which are a fixed size) and scratch space for
+ * BufferAggregators (which is also fixed size). The actual table is represented by "tableBuffer", which points to the
+ * same memory as positions "tableStart" through "tableStart + buckets * bucketSize" of "buffer". Everything else in
+ * the table arena is potentially junk.
+ *
+ * The array of pointers starts out ordered by insertion order, but might be sorted on calls to
+ * {@link #iterator(boolean)}. This sorting is done in-place to avoid materializing the full array of pointers. The
+ * first "size" pointers in the array of pointers are valid; everything else is potentially junk.
+ *
+ * The table is periodically grown to accommodate more keys. Even though starting small is not necessary to control
+ * memory use (we already have the entire buffer allocated) or iteration speed (iteration is fast due to the array
+ * of pointers) it still helps significantly on initialization times. Otherwise, we'd need to clear the used bits of
+ * each bucket in the entire buffer, which is a lot of writes if the buckets are small.
+ */
 public class BufferGrouper<KeyType extends Comparable<KeyType>> implements Grouper<KeyType>
 {
   private static final int INITIAL_BUCKETS = 32;
@@ -218,6 +238,7 @@ public class BufferGrouper<KeyType extends Comparable<KeyType>> implements Group
     if (sorted) {
       final KeyComparator comparator = keySerde.comparator();
 
+      // Sort offsets in-place.
       Collections.sort(
           wrappedOffsets,
           new Comparator<Integer>()

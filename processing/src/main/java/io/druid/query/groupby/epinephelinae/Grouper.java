@@ -25,6 +25,16 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import java.nio.ByteBuffer;
 import java.util.Iterator;
 
+/**
+ * Groupers aggregate metrics from rows that they typically get from a ColumnSelectorFactory, under
+ * grouping keys that some outside driver is passing in. They can also iterate over the grouped
+ * rows after the aggregation is done.
+ *
+ * They work sort of like a map of KeyType to aggregated values, except they don't support
+ * random lookups.
+ *
+ * @param <KeyType> type of the key that will be passed in
+ */
 public interface Grouper<KeyType extends Comparable<KeyType>>
 {
   /**
@@ -33,7 +43,7 @@ public interface Grouper<KeyType extends Comparable<KeyType>>
    * @param key     key object
    * @param keyHash result of {@link Groupers#hash(Object)} on the key
    *
-   * @return true if the row was aggregated, false if not due to hitting maxSize
+   * @return true if the row was aggregated, false if not due to hitting resource limits
    */
   boolean aggregate(KeyType key, int keyHash);
 
@@ -42,7 +52,7 @@ public interface Grouper<KeyType extends Comparable<KeyType>>
    *
    * @param key key
    *
-   * @return true if the row was aggregated, false if not due to hitting maxSize
+   * @return true if the row was aggregated, false if not due to hitting resource limits
    */
   boolean aggregate(KeyType key);
 
@@ -51,17 +61,20 @@ public interface Grouper<KeyType extends Comparable<KeyType>>
    */
   void reset();
 
+  /**
+   * Close the grouper and release associated resources.
+   */
   void close();
 
   /**
    * Iterate through entries. If a comparator is provided, do a sorted iteration.
-   * <p>
+   *
    * It is safe to call this method multiple times to get multiple iterators.
-   * <p>
+   *
    * Once this method is called, writes are no longer safe. After you have are done with the iterators returned by this
    * method, you should either call {@link #close()} (if you are done with the Grouper) or {@link #reset()} (if you
    * want to reuse it).
-   * <p>
+   *
    * If "sorted" is true then the iterator will return sorted results. It will use KeyType's natural ordering on
    * deserialized objects, and will use the {@link KeySerde#comparator()} on serialized objects. Woe be unto you
    * if these comparators are not equivalent.
@@ -102,9 +115,15 @@ public interface Grouper<KeyType extends Comparable<KeyType>>
 
   interface KeySerdeFactory<T>
   {
+    /**
+     * Create a new KeySerde, which may be stateful.
+     */
     KeySerde<T> factorize();
   }
 
+  /**
+   * Possibly-stateful object responsible for serde and comparison of keys.
+   */
   interface KeySerde<T>
   {
     /**

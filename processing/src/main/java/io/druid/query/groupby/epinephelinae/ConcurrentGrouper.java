@@ -23,12 +23,17 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.druid.query.aggregation.AggregatorFactory;
 import io.druid.segment.ColumnSelectorFactory;
 
-import java.io.File;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 
+/**
+ * Grouper based around a set of underlying {@link SpillingGrouper} instances. Thread-safe.
+ *
+ * The passed-in buffer is cut up into "concurrencyHint" slices, and each slice is passed to a different underlying
+ * grouper. Access to each slice is separately synchronized.
+ */
 public class ConcurrentGrouper<KeyType extends Comparable<KeyType>> implements Grouper<KeyType>
 {
   private final List<Grouper<KeyType>> groupers;
@@ -121,6 +126,6 @@ public class ConcurrentGrouper<KeyType extends Comparable<KeyType>> implements G
 
   private int grouperNumberForKeyHash(int keyHash)
   {
-    return (keyHash >>> 4) % groupers.size();
+    return keyHash % groupers.size();
   }
 }

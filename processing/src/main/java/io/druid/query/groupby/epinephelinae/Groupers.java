@@ -45,10 +45,8 @@ public class Groupers
 
   public static int hash(final Object obj)
   {
-    // Smear a bit similar to what the built-in HashMap does. Also, mask off the high bit so we can use
-    // that to determine if a bucket is used or not.
-    final int h = obj.hashCode();
-    return (h ^ (h >>> 16)) & 0x7fffffff;
+    // Mask off the high bit so we can use that to determine if a bucket is used or not.
+    return obj.hashCode() & 0x7fffffff;
   }
 
   public static <KeyType extends Comparable<KeyType>> Iterator<Grouper.Entry<KeyType>> mergeIterators(

@@ -42,6 +42,11 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 
+/**
+ * Grouper based around a single underlying {@link BufferGrouper}. Not thread-safe.
+ *
+ * When the underlying grouper is full, its contents are sorted and written to temporary files using "spillMapper".
+ */
 public class SpillingGrouper<KeyType extends Comparable<KeyType>> implements Grouper<KeyType>
 {
   private static final Logger log = new Logger(SpillingGrouper.class);
