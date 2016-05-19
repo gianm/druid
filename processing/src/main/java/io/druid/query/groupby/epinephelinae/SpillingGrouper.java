@@ -190,9 +190,7 @@ public class SpillingGrouper<KeyType extends Comparable<KeyType>> implements Gro
       CloseQuietly.close(closeable);
     }
     for (final File file : files) {
-      if (!file.delete()) {
-        log.warn("Could not delete file[%s]", file);
-      }
+      temporaryStorage.delete(file);
     }
     files.clear();
   }

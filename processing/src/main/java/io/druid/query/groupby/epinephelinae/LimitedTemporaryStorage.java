@@ -19,7 +19,8 @@
 
 package io.druid.query.groupby.epinephelinae;
 
-import com.google.common.collect.Lists;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Sets;
 import com.metamx.common.ISE;
 import com.metamx.common.logger.Logger;
 
@@ -30,9 +31,10 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
+import java.nio.file.Files;
 import java.nio.file.StandardOpenOption;
 import java.util.EnumSet;
-import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class LimitedTemporaryStorage implements Closeable
@@ -43,7 +45,7 @@ public class LimitedTemporaryStorage implements Closeable
   private final long maxBytesUsed;
 
   private final AtomicLong bytesUsed = new AtomicLong();
-  private final List<File> files = Lists.newArrayList();
+  private final Set<File> files = Sets.newTreeSet();
 
   private volatile boolean closed = false;
 
@@ -64,14 +66,34 @@ public class LimitedTemporaryStorage implements Closeable
         throw new ISE("Closed");
       }
 
+      if (!storageDirectory.exists() && !storageDirectory.mkdir()) {
+        throw new IOException(String.format("Cannot create storageDirectory: %s", storageDirectory));
+      }
+
       final File theFile = new File(storageDirectory, String.format("%08d.tmp", files.size()));
       final EnumSet<StandardOpenOption> openOptions = EnumSet.of(
           StandardOpenOption.CREATE_NEW,
           StandardOpenOption.WRITE
       );
+
       final FileChannel channel = FileChannel.open(theFile.toPath(), openOptions);
       files.add(theFile);
       return new LimitedOutputStream(theFile, Channels.newOutputStream(channel));
+    }
+  }
+
+  public void delete(final File file)
+  {
+    synchronized (files) {
+      if (files.contains(file)) {
+        try {
+          Files.delete(file.toPath());
+        }
+        catch (IOException e) {
+          log.warn(e, "Cannot delete file: %s", file);
+        }
+        files.remove(file);
+      }
     }
   }
 
@@ -79,13 +101,14 @@ public class LimitedTemporaryStorage implements Closeable
   public void close()
   {
     synchronized (files) {
-      closed = true;
-      for (File file : files) {
-        if (!file.delete()) {
-          log.warn("Cannot delete file: %s", file);
-        }
+      if (closed) {
+        return;
       }
-      if (!storageDirectory.delete()) {
+      closed = true;
+      for (File file : ImmutableSet.copyOf(files)) {
+        delete(file);
+      }
+      if (storageDirectory.exists() && !storageDirectory.delete()) {
         log.warn("Cannot delete storageDirectory: %s", storageDirectory);
       }
     }
@@ -127,16 +150,17 @@ public class LimitedTemporaryStorage implements Closeable
       return file;
     }
 
-    private void grab(int n)
+    private void grab(int n) throws IOException
     {
       if (bytesUsed.addAndGet(n) > maxBytesUsed) {
         throwFullError();
       }
     }
+
   }
 
-  private void throwFullError()
+  private void throwFullError() throws IOException
   {
-    throw new ISE("Cannot write to disk, hit limit of %,d bytes.", maxBytesUsed);
+    throw new IOException(String.format("Cannot write to disk, hit limit of %,d bytes.", maxBytesUsed));
   }
 }

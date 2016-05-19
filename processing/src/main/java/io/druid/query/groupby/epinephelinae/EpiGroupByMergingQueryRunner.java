@@ -26,10 +26,10 @@ import com.google.common.base.Function;
 import com.google.common.base.Predicates;
 import com.google.common.base.Strings;
 import com.google.common.base.Throwables;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
-import com.google.common.io.Files;
 import com.google.common.primitives.Chars;
 import com.google.common.primitives.Ints;
 import com.google.common.primitives.Longs;
@@ -67,11 +67,13 @@ import io.druid.segment.LongColumnSelector;
 import io.druid.segment.ObjectColumnSelector;
 
 import java.io.Closeable;
+import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -81,6 +83,7 @@ import java.util.concurrent.TimeoutException;
 public class EpiGroupByMergingQueryRunner implements QueryRunner
 {
   private static final Logger log = new Logger(EpiGroupByMergingQueryRunner.class);
+  private static final String CTX_KEY_MERGE_RUNNERS_USING_CHAINED_EXECUTION = "mergeRunnersUsingChainedExecution";
 
   private final GroupByQueryConfig config;
   private final Iterable<QueryRunner<Row>> queryables;
@@ -114,7 +117,20 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
   {
     final GroupByQuery query = (GroupByQuery) queryParam;
 
-    if (BaseQuery.getContextBySegment(query, false)) {
+    // CTX_KEY_MERGE_RUNNERS_USING_CHAINED_EXECUTION is here because realtime servers use nested mergeRunners calls
+    // (one for the entire query and one for each sink). We only want the outer call to actually do merging with a
+    // merge buffer, otherwise the query will allocate too many merge buffers. This is potentially sub-optimal as it
+    // will involve materializing the results for each sink before starting to feed them into the outer merge buffer.
+    // I'm not sure of a better way to do this without tweaking how realtime servers do queries.
+    final boolean forceChainedExecution = query.getContextBoolean(
+        CTX_KEY_MERGE_RUNNERS_USING_CHAINED_EXECUTION,
+        false
+    );
+    final GroupByQuery queryForRunners = query.withOverriddenContext(
+        ImmutableMap.<String, Object>of(CTX_KEY_MERGE_RUNNERS_USING_CHAINED_EXECUTION, true)
+    );
+
+    if (BaseQuery.getContextBySegment(query, false) || forceChainedExecution) {
       return new ChainedExecutionQueryRunner(exec, queryWatcher, queryables).run(query, responseContext);
     }
 
@@ -129,16 +145,21 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
     );
     final GroupByMergingColumnSelectorFactory columnSelectorFactory = new GroupByMergingColumnSelectorFactory();
 
-    // TODO(gianm): Configurable spill dir
+    final File temporaryStorageDirectory = new File(
+        System.getProperty("java.io.tmpdir"),
+        String.format("druid-groupBy-%s_%s", UUID.randomUUID(), query.getId())
+    );
+
     final LimitedTemporaryStorage temporaryStorage = new LimitedTemporaryStorage(
-        Files.createTempDir(),
+        temporaryStorageDirectory,
         config.getMaxOnDiskStorage()
     );
 
-    final ResourceHolder<ByteBuffer> mergeBuffer;
+    final ResourceHolder<ByteBuffer> mergeBufferHolder;
 
     try {
-      mergeBuffer = mergeBufferPool.take();
+      // TODO(gianm): Should have a timeout here
+      mergeBufferHolder = mergeBufferPool.take();
     }
     catch (InterruptedException e) {
       Thread.currentThread().interrupt();
@@ -153,7 +174,7 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
               public CloseableGrouperIterator<GroupByMergingKey, Row> make()
               {
                 final Grouper<GroupByMergingKey> grouper = new ConcurrentGrouper<>(
-                    mergeBuffer.get(),
+                    mergeBufferHolder.get(),
                     concurrencyHint,
                     temporaryStorage,
                     spillMapper,
@@ -182,7 +203,6 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
                     columnSelectorFactory.setRow(row);
                     final boolean didAggregate = theGrouper.aggregate(new GroupByMergingKey(timestamp, dimensions));
                     if (!didAggregate) {
-                      // TODO(gianm): Better error message
                       throw new ISE("Grouping resources exhausted");
                     }
                     columnSelectorFactory.setRow(null);
@@ -213,7 +233,7 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
                                       public Void call() throws Exception
                                       {
                                         try {
-                                          input.run(queryParam, responseContext).accumulate(grouper, accumulator);
+                                          input.run(queryForRunners, responseContext).accumulate(grouper, accumulator);
                                           return null;
                                         }
                                         catch (QueryInterruptedException e) {
@@ -278,7 +298,7 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
           @Override
           public void close() throws IOException
           {
-            mergeBuffer.close();
+            mergeBufferHolder.close();
             CloseQuietly.close(temporaryStorage);
           }
         }

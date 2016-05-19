@@ -93,7 +93,7 @@ public class BlockingPool<T>
     @Override
     protected void finalize() throws Throwable
     {
-      if (!closed.get()) {
+      if (closed.compareAndSet(false, true)) {
         log.warn("Not closed! Object was[%s]. Returning to pool.", object);
         if (!objects.offer(object)) {
           log.error("WTF?! Queue offer failed during finalize, uh oh...");
