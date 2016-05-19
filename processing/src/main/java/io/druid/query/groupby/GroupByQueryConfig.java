@@ -38,13 +38,15 @@ public class GroupByQueryConfig
   private int maxResults = 500000;
 
   @JsonProperty
-  // Not documented, only used for tests
+  // Not documented, only used for tests to force spilling
   private int maxBufferGrouperSize = Integer.MAX_VALUE;
 
   @JsonProperty
-  private long maxMergingDictionarySize = 20 * 1024 * 1024;
+  // Size of on-heap string dictionary for merging, per-query; when exceeded, partial results will be spilled to disk
+  private long maxMergingDictionarySize = 25 * 1024 * 1024;
 
   @JsonProperty
+  // Max on-disk temporary storage, per-query; when exceeded, the query fails
   private long maxOnDiskStorage = 1024 * 1024 * 1024;
 
   public String getDefaultStrategy()

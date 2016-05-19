@@ -141,7 +141,7 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
 
     final GroupByMergingKeySerdeFactory keySerdeFactory = new GroupByMergingKeySerdeFactory(
         query.getDimensions().size(),
-        config.getMaxMergingDictionarySize()
+        config.getMaxMergingDictionarySize() / concurrencyHint
     );
     final GroupByMergingColumnSelectorFactory columnSelectorFactory = new GroupByMergingColumnSelectorFactory();
 
