@@ -40,6 +40,7 @@ import com.google.common.util.concurrent.MoreExecutors;
 import com.metamx.common.ISE;
 import com.metamx.common.guava.Accumulator;
 import com.metamx.common.guava.BaseSequence;
+import com.metamx.common.guava.CloseQuietly;
 import com.metamx.common.guava.ResourceClosingSequence;
 import com.metamx.common.guava.Sequence;
 import com.metamx.common.logger.Logger;
@@ -66,7 +67,6 @@ import io.druid.segment.LongColumnSelector;
 import io.druid.segment.ObjectColumnSelector;
 
 import java.io.Closeable;
-import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
@@ -130,7 +130,10 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
     final GroupByMergingColumnSelectorFactory columnSelectorFactory = new GroupByMergingColumnSelectorFactory();
 
     // TODO(gianm): Configurable spill dir
-    final File spillDirectory = Files.createTempDir();
+    final LimitedTemporaryStorage temporaryStorage = new LimitedTemporaryStorage(
+        Files.createTempDir(),
+        config.getMaxOnDiskStorage()
+    );
 
     final ResourceHolder<ByteBuffer> mergeBuffer;
 
@@ -152,7 +155,7 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
                 final Grouper<GroupByMergingKey> grouper = new ConcurrentGrouper<>(
                     mergeBuffer.get(),
                     concurrencyHint,
-                    spillDirectory,
+                    temporaryStorage,
                     spillMapper,
                     config.getMaxBufferGrouperSize(),
                     keySerdeFactory,
@@ -276,9 +279,7 @@ public class EpiGroupByMergingQueryRunner implements QueryRunner
           public void close() throws IOException
           {
             mergeBuffer.close();
-            if (!spillDirectory.delete()) {
-              log.warn("Could not delete spillDirectory[%s].", spillDirectory);
-            }
+            CloseQuietly.close(temporaryStorage);
           }
         }
     );

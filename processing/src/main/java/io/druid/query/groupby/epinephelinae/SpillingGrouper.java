@@ -34,16 +34,12 @@ import io.druid.segment.ColumnSelectorFactory;
 import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
-import java.io.OutputStream;
 import java.nio.ByteBuffer;
-import java.nio.channels.Channels;
-import java.nio.channels.FileChannel;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.Iterator;
 import java.util.List;
-import java.util.UUID;
 
 public class SpillingGrouper<KeyType extends Comparable<KeyType>> implements Grouper<KeyType>
 {
@@ -51,10 +47,8 @@ public class SpillingGrouper<KeyType extends Comparable<KeyType>> implements Gro
 
   private final BufferGrouper<KeyType> grouper;
   private final KeySerde<KeyType> keySerde;
-  private final File spillDirectory;
-  private final String spillPrefix;
+  private final LimitedTemporaryStorage temporaryStorage;
   private final ObjectMapper spillMapper;
-  private final int maxBufferGrouperSize;
   private final AggregatorFactory[] aggregatorFactories;
 
   private final List<File> files = Lists.newArrayList();
@@ -65,7 +59,7 @@ public class SpillingGrouper<KeyType extends Comparable<KeyType>> implements Gro
       final KeySerdeFactory<KeyType> keySerdeFactory,
       final ColumnSelectorFactory columnSelectorFactory,
       final AggregatorFactory[] aggregatorFactories,
-      final File spillDirectory,
+      final LimitedTemporaryStorage temporaryStorage,
       final ObjectMapper spillMapper,
       final int maxBufferGrouperSize
   )
@@ -79,10 +73,8 @@ public class SpillingGrouper<KeyType extends Comparable<KeyType>> implements Gro
         maxBufferGrouperSize
     );
     this.aggregatorFactories = aggregatorFactories;
-    this.spillDirectory = spillDirectory;
+    this.temporaryStorage = temporaryStorage;
     this.spillMapper = spillMapper;
-    this.spillPrefix = UUID.randomUUID().toString();
-    this.maxBufferGrouperSize = maxBufferGrouperSize;
   }
 
   @Override
@@ -154,7 +146,6 @@ public class SpillingGrouper<KeyType extends Comparable<KeyType>> implements Gro
 
   private void spill()
   {
-    // TODO(gianm): Limit on disk use
     // TODO(gianm): Compress spill files?
 
     final EnumSet<StandardOpenOption> openOptions = EnumSet.of(
@@ -162,14 +153,11 @@ public class SpillingGrouper<KeyType extends Comparable<KeyType>> implements Gro
         StandardOpenOption.WRITE
     );
 
-    final File file = new File(spillDirectory, String.format("%s_%04d", spillPrefix, files.size()));
-    files.add(file);
-
     try (
-        final FileChannel channel = FileChannel.open(file.toPath(), openOptions);
-        final OutputStream out = Channels.newOutputStream(channel);
+        final LimitedTemporaryStorage.LimitedOutputStream out = temporaryStorage.createFile();
         final JsonGenerator jsonGenerator = spillMapper.getFactory().createGenerator(out)
     ) {
+      files.add(out.getFile());
       final Iterator<Entry<KeyType>> it = grouper.iterator(true);
       while (it.hasNext()) {
         jsonGenerator.writeObject(it.next());
@@ -206,7 +194,6 @@ public class SpillingGrouper<KeyType extends Comparable<KeyType>> implements Gro
         log.warn("Could not delete file[%s]", file);
       }
     }
-
     files.clear();
   }
 }
