@@ -43,7 +43,7 @@ import java.util.List;
  */
 public class TimeseriesQueryEngine
 {
-  private static final int VECTOR_SIZE = 64;
+  private static final int VECTOR_SIZE = 1024;
 
   private final StupidPool<ByteBuffer> bufferPool;
 
@@ -98,18 +98,19 @@ public class TimeseriesQueryEngine
                   return null;
                 }
 
-                final VectorAggregator[] aggregators = new VectorAggregator[aggregatorSpecs.size()];
-                for (int i = 0; i < aggregatorSpecs.size(); i++) {
-                  final VectorAggregator agg = aggregatorSpecs.get(i).factorizeVectored(cursor);
-                  if (agg == null) {
-                    throw new ISE("Aggregator[%s] cannot be vectorized", aggregatorSpecs.get(i).getName());
-                  }
-                  aggregators[i] = agg;
-                }
-
                 final ByteBuffer buffer = bufferHolder.get();
+                final VectorAggregator[] aggregators = new VectorAggregator[aggregatorSpecs.size()];
 
                 try {
+                  for (int i = 0; i < aggregatorSpecs.size(); i++) {
+                    final VectorAggregator agg = aggregatorSpecs.get(i).factorizeVectored(cursor);
+                    if (agg == null) {
+                      throw new ISE("Aggregator[%s] cannot be vectorized", aggregatorSpecs.get(i).getName());
+                    }
+                    agg.init(buffer, aggregatorOffsets[i]);
+                    aggregators[i] = agg;
+                  }
+
                   while (!cursor.isDone()) {
                     for (int i = 0; i < aggregatorSpecs.size(); i++) {
                       aggregators[i].aggregate(buffer, aggregatorOffsets[i], null, 0);
@@ -128,7 +129,9 @@ public class TimeseriesQueryEngine
                 finally {
                   // cleanup
                   for (VectorAggregator agg : aggregators) {
-                    agg.close();
+                    if (agg != null) {
+                      agg.close();
+                    }
                   }
                 }
               }

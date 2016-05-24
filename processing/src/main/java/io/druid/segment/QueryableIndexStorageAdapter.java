@@ -354,13 +354,16 @@ public class QueryableIndexStorageAdapter implements StorageAdapter
                       }
 
                       cursorOffset.increment();
+                      numUsableElements = 0;
+
                       for (int i = 0; i < vectorSize; i++) {
-                        if (!cursorOffset.withinBounds()) {
+                        if (cursorOffset.withinBounds()) {
+                          offsets[i] = cursorOffset.getOffset();
+                          numUsableElements = i;
+                          cursorOffset.increment();
+                        } else {
                           break;
                         }
-
-                        offsets[i] = cursorOffset.getOffset();
-                        numUsableElements = i;
                       }
                     }
 
@@ -382,13 +385,14 @@ public class QueryableIndexStorageAdapter implements StorageAdapter
                     @Override
                     public boolean isDone()
                     {
-                      return !cursorOffset.withinBounds();
+                      return !cursorOffset.withinBounds() && numUsableElements == 0;
                     }
 
                     @Override
                     public void reset()
                     {
                       cursorOffset = initOffset.clone();
+                      numUsableElements = 0;
                     }
 
                     @Override
@@ -762,13 +766,25 @@ public class QueryableIndexStorageAdapter implements StorageAdapter
                       // TODO(gianm): Asking for other selectors should fail if vectorSize > 1
                       // TODO(gianm): Allocating all this stuff upfront is silly, should have more classes
 
-                      final Column column = index.getColumn(columnName);
-                      final GenericColumn genericColumn = column.getGenericColumn();
-                      final ComplexColumn complexColumn = column.getComplexColumn();
+                      GenericColumn cachedGenericColumn = genericColumnCache.get(columnName);
+
+                      if (cachedGenericColumn == null) {
+                        Column holder = index.getColumn(columnName);
+                        if (holder != null) {
+                          cachedGenericColumn = holder.getGenericColumn();
+                          genericColumnCache.put(columnName, cachedGenericColumn);
+                        }
+                      }
+
+                      if (cachedGenericColumn == null) {
+                        // TODO(gianm): Return column of zeroes, not null column
+                        return null;
+                      }
+
+                      final GenericColumn genericColumn = cachedGenericColumn;
 
                       final float[] floats = new float[vectorSize];
                       final long[] longs = new long[vectorSize];
-                      final Object[] objects = new Object[vectorSize];
 
                       return new VectorizedColumnSelector()
                       {
@@ -794,15 +810,6 @@ public class QueryableIndexStorageAdapter implements StorageAdapter
                             longs[i + 1] = genericColumn.getLongSingleValueRow(i + 1);
                           }
                           return longs;
-                        }
-
-                        @Override
-                        public Object[] getObjects()
-                        {
-                          for (int i = 0; i < numUsableElements; i++) {
-                            objects[i + 1] = complexColumn.getRowValue(i + 1);
-                          }
-                          return objects;
                         }
                       };
                     }

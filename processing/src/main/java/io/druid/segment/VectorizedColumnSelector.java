@@ -26,6 +26,4 @@ public interface VectorizedColumnSelector
   float[] getFloats();
 
   long[] getLongs();
-
-  Object[] getObjects();
 }
