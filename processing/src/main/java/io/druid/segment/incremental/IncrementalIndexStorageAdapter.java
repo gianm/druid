@@ -46,6 +46,7 @@ import io.druid.segment.NullDimensionSelector;
 import io.druid.segment.ObjectColumnSelector;
 import io.druid.segment.SingleScanTimeDimSelector;
 import io.druid.segment.StorageAdapter;
+import io.druid.segment.VectorizedColumnSelector;
 import io.druid.segment.column.Column;
 import io.druid.segment.column.ColumnCapabilities;
 import io.druid.segment.data.Indexed;
@@ -177,7 +178,13 @@ public class IncrementalIndexStorageAdapter implements StorageAdapter
   }
 
   @Override
-  public Sequence<Cursor> makeCursors(final Filter filter, final Interval interval, final QueryGranularity gran, final boolean descending)
+  public Sequence<Cursor> makeCursors(
+      final Filter filter,
+      final Interval interval,
+      final QueryGranularity gran,
+      final boolean descending,
+      final int vectorSize
+  )
   {
     if (index.isEmpty()) {
       return Sequences.empty();
@@ -307,7 +314,7 @@ public class IncrementalIndexStorageAdapter implements StorageAdapter
                 }
 
                 if (Thread.interrupted()) {
-                  throw new QueryInterruptedException( new InterruptedException());
+                  throw new QueryInterruptedException(new InterruptedException());
                 }
 
                 boolean foundMatched = false;
@@ -598,6 +605,13 @@ public class IncrementalIndexStorageAdapter implements StorageAdapter
                 }
 
                 return null;
+              }
+
+              @Override
+              public VectorizedColumnSelector makeVectorizedColumnSelector(String columnName)
+              {
+                // TODO(gianm): Support vectorized columns in incremental index
+                throw new UnsupportedOperationException();
               }
             };
           }

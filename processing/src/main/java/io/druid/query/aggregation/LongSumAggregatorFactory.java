@@ -65,7 +65,13 @@ public class LongSumAggregatorFactory extends AggregatorFactory
   @Override
   public BufferAggregator factorizeBuffered(ColumnSelectorFactory metricFactory)
   {
-    return new LongSumBufferAggregator(metricFactory.makeLongColumnSelector(fieldName));
+    return new LongSumBufferAggregator(metricFactory.makeVectorizedColumnSelector(fieldName));
+  }
+
+  @Override
+  public VectorAggregator factorizeVectored(ColumnSelectorFactory metricFactory)
+  {
+    return new LongSumBufferAggregator(metricFactory.makeVectorizedColumnSelector(fieldName));
   }
 
   @Override

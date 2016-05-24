@@ -165,7 +165,13 @@ public class SearchQueryRunner implements QueryRunner<Result<SearchResultValue>>
       dimsToSearch = dimensions;
     }
 
-    final Sequence<Cursor> cursors = adapter.makeCursors(filter, segment.getDataInterval(), QueryGranularities.ALL, descending);
+    final Sequence<Cursor> cursors = adapter.makeCursors(
+        filter,
+        segment.getDataInterval(),
+        QueryGranularities.ALL,
+        descending,
+        1 // TODO(gianm): Vectorize query
+    );
 
     final TreeMap<SearchHit, MutableInt> retVal = cursors.accumulate(
         Maps.<SearchHit, SearchHit, MutableInt>newTreeMap(query.getSort().getComparator()),

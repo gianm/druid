@@ -87,6 +87,7 @@ public class SelectQueryEngine
         query.getQuerySegmentSpec().getIntervals(),
         Filters.toFilter(query.getDimensionsFilter()),
         query.isDescending(),
+        1, // TODO(gianm): Vectorize query
         query.getGranularity(),
         new Function<Cursor, Result<SelectResultValue>>()
         {

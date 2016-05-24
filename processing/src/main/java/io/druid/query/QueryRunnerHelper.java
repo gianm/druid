@@ -27,8 +27,6 @@ import com.metamx.common.guava.Sequence;
 import com.metamx.common.guava.Sequences;
 import com.metamx.common.logger.Logger;
 import io.druid.granularity.QueryGranularity;
-import io.druid.query.aggregation.Aggregator;
-import io.druid.query.aggregation.AggregatorFactory;
 import io.druid.query.filter.Filter;
 import io.druid.segment.Cursor;
 import io.druid.segment.StorageAdapter;
@@ -44,22 +42,12 @@ public class QueryRunnerHelper
 {
   private static final Logger log = new Logger(QueryRunnerHelper.class);
 
-  public static Aggregator[] makeAggregators(Cursor cursor, List<AggregatorFactory> aggregatorSpecs)
-  {
-    Aggregator[] aggregators = new Aggregator[aggregatorSpecs.size()];
-    int aggregatorIndex = 0;
-    for (AggregatorFactory spec : aggregatorSpecs) {
-      aggregators[aggregatorIndex] = spec.factorize(cursor);
-      ++aggregatorIndex;
-    }
-    return aggregators;
-  }
-
   public static <T> Sequence<Result<T>> makeCursorBasedQuery(
       final StorageAdapter adapter,
       List<Interval> queryIntervals,
       Filter filter,
       boolean descending,
+      int vectorSize,
       QueryGranularity granularity,
       final Function<Cursor, Result<T>> mapFn
   )
@@ -70,7 +58,7 @@ public class QueryRunnerHelper
 
     return Sequences.filter(
         Sequences.map(
-            adapter.makeCursors(filter, queryIntervals.get(0), granularity, descending),
+            adapter.makeCursors(filter, queryIntervals.get(0), granularity, descending, vectorSize),
             new Function<Cursor, Result<T>>()
             {
               @Override
@@ -85,7 +73,8 @@ public class QueryRunnerHelper
     );
   }
 
-  public static <T>  QueryRunner<T> makeClosingQueryRunner(final QueryRunner<T> runner, final Closeable closeable){
+  public static <T> QueryRunner<T> makeClosingQueryRunner(final QueryRunner<T> runner, final Closeable closeable)
+  {
     return new QueryRunner<T>()
     {
       @Override

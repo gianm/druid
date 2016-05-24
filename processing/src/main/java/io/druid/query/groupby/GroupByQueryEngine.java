@@ -98,7 +98,8 @@ public class GroupByQueryEngine
         Filters.toFilter(query.getDimFilter()),
         intervals.get(0),
         query.getGranularity(),
-        false
+        false,
+        1 // TODO(gianm): Vectorize query
     );
 
     final ResourceHolder<ByteBuffer> bufferHolder = intermediateResultsBufferPool.take();

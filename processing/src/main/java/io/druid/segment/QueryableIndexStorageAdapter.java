@@ -21,7 +21,6 @@ package io.druid.segment;
 
 import com.google.common.base.Function;
 import com.google.common.base.Predicates;
-import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterators;
 import com.google.common.collect.Lists;
@@ -191,7 +190,13 @@ public class QueryableIndexStorageAdapter implements StorageAdapter
   }
 
   @Override
-  public Sequence<Cursor> makeCursors(Filter filter, Interval interval, QueryGranularity gran, boolean descending)
+  public Sequence<Cursor> makeCursors(
+      Filter filter,
+      Interval interval,
+      QueryGranularity gran,
+      boolean descending,
+      int vectorSize
+  )
   {
     Interval actualInterval = interval;
 
@@ -233,7 +238,8 @@ public class QueryableIndexStorageAdapter implements StorageAdapter
             offset,
             minDataTimestamp,
             maxDataTimestamp,
-            descending
+            descending,
+            vectorSize
         ).build(),
         Predicates.<Cursor>notNull()
     );
@@ -248,6 +254,7 @@ public class QueryableIndexStorageAdapter implements StorageAdapter
     private final long minDataTimestamp;
     private final long maxDataTimestamp;
     private final boolean descending;
+    private final int vectorSize;
 
     public CursorSequenceBuilder(
         ColumnSelector index,
@@ -256,7 +263,8 @@ public class QueryableIndexStorageAdapter implements StorageAdapter
         Offset offset,
         long minDataTimestamp,
         long maxDataTimestamp,
-        boolean descending
+        boolean descending,
+        int vectorSize
     )
     {
       this.index = index;
@@ -266,6 +274,7 @@ public class QueryableIndexStorageAdapter implements StorageAdapter
       this.minDataTimestamp = minDataTimestamp;
       this.maxDataTimestamp = maxDataTimestamp;
       this.descending = descending;
+      this.vectorSize = vectorSize;
     }
 
     public Sequence<Cursor> build()
@@ -328,6 +337,8 @@ public class QueryableIndexStorageAdapter implements StorageAdapter
                     private final Offset initOffset = offset.clone();
                     private final DateTime myBucket = gran.toDateTime(input);
                     private Offset cursorOffset = offset;
+                    private int numUsableElements = 0;
+                    private int[] offsets = new int[vectorSize];
 
                     @Override
                     public DateTime getTime()
@@ -341,12 +352,26 @@ public class QueryableIndexStorageAdapter implements StorageAdapter
                       if (Thread.interrupted()) {
                         throw new QueryInterruptedException(new InterruptedException());
                       }
+
                       cursorOffset.increment();
+                      for (int i = 0; i < vectorSize; i++) {
+                        if (!cursorOffset.withinBounds()) {
+                          break;
+                        }
+
+                        offsets[i] = cursorOffset.getOffset();
+                        numUsableElements = i;
+                      }
                     }
 
                     @Override
                     public void advanceTo(int offset)
                     {
+                      // TODO(gianm): Help out select queries somehow
+                      if (vectorSize > 1) {
+                        throw new IllegalStateException("Cannot advanceTo an offset when vectorSize > 1");
+                      }
+
                       int count = 0;
                       while (count < offset && !isDone()) {
                         advance();
@@ -730,6 +755,57 @@ public class QueryableIndexStorageAdapter implements StorageAdapter
                         }
                       };
                     }
+
+                    @Override
+                    public VectorizedColumnSelector makeVectorizedColumnSelector(String columnName)
+                    {
+                      // TODO(gianm): Asking for other selectors should fail if vectorSize > 1
+                      // TODO(gianm): Allocating all this stuff upfront is silly, should have more classes
+
+                      final Column column = index.getColumn(columnName);
+                      final GenericColumn genericColumn = column.getGenericColumn();
+                      final ComplexColumn complexColumn = column.getComplexColumn();
+
+                      final float[] floats = new float[vectorSize];
+                      final long[] longs = new long[vectorSize];
+                      final Object[] objects = new Object[vectorSize];
+
+                      return new VectorizedColumnSelector()
+                      {
+                        @Override
+                        public int numUsableElements()
+                        {
+                          return numUsableElements;
+                        }
+
+                        @Override
+                        public float[] getFloats()
+                        {
+                          for (int i = 0; i < numUsableElements; i++) {
+                            floats[i] = genericColumn.getFloatSingleValueRow(i);
+                          }
+                          return floats;
+                        }
+
+                        @Override
+                        public long[] getLongs()
+                        {
+                          for (int i = 0; i < numUsableElements; i++) {
+                            longs[i] = genericColumn.getLongSingleValueRow(i);
+                          }
+                          return longs;
+                        }
+
+                        @Override
+                        public Object[] getObjects()
+                        {
+                          for (int i = 0; i < numUsableElements; i++) {
+                            objects[i] = complexColumn.getRowValue(i);
+                          }
+                          return objects;
+                        }
+                      };
+                    }
                   };
                 }
               }
@@ -808,7 +884,8 @@ public class QueryableIndexStorageAdapter implements StorageAdapter
     }
 
     @Override
-    public Offset clone() {
+    public Offset clone()
+    {
       throw new IllegalStateException("clone");
     }
   }

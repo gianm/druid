@@ -74,7 +74,8 @@ public class TopNQueryEngine
 
     return Sequences.filter(
         Sequences.map(
-            adapter.makeCursors(filter, queryIntervals.get(0), granularity, query.isDescending()),
+            // TODO(gianm): Vectorize query
+            adapter.makeCursors(filter, queryIntervals.get(0), granularity, query.isDescending(), 1),
             new Function<Cursor, Result<TopNResultValue>>()
             {
               @Override

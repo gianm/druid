@@ -29,9 +29,9 @@ import java.util.Map;
 
 /**
  * Processing related interface
- * 
+ *
  * An AggregatorFactory is an object that knows how to generate an Aggregator using a ColumnSelectorFactory.
- * 
+ *
  * This is useful as an abstraction to allow Aggregator classes to be written in terms of MetricSelector objects
  * without making any assumptions about how they are pulling values out of the base data.  That is, the data is
  * provided to the Aggregator through the MetricSelector object, so whatever creates that object gets to choose how
@@ -44,6 +44,13 @@ public abstract class AggregatorFactory
   public abstract Aggregator factorize(ColumnSelectorFactory metricFactory);
 
   public abstract BufferAggregator factorizeBuffered(ColumnSelectorFactory metricFactory);
+
+  // TODO(gianm): Javadoc. Null means vectorization not supported.
+  // TODO(gianm): Should have canVectorize so we know if we should make vectorized cursors or not
+  public VectorAggregator factorizeVectored(ColumnSelectorFactory metricFactory)
+  {
+    return null;
+  }
 
   public abstract Comparator getComparator();
 
@@ -78,7 +85,10 @@ public abstract class AggregatorFactory
    */
   public AggregatorFactory getMergingFactory(AggregatorFactory other) throws AggregatorFactoryNotMergeableException
   {
-    throw new UnsupportedOperationException(String.format("[%s] does not implement getMergingFactory(..)", this.getClass().getName()));
+    throw new UnsupportedOperationException(String.format(
+        "[%s] does not implement getMergingFactory(..)",
+        this.getClass().getName()
+    ));
   }
 
   /**

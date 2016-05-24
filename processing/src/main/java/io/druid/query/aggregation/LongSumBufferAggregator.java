@@ -19,18 +19,18 @@
 
 package io.druid.query.aggregation;
 
-import io.druid.segment.LongColumnSelector;
+import io.druid.segment.VectorizedColumnSelector;
 
 import java.nio.ByteBuffer;
 
 /**
  */
-public class LongSumBufferAggregator implements BufferAggregator
+public class LongSumBufferAggregator implements BufferAggregator, VectorAggregator
 {
-  private final LongColumnSelector selector;
+  private final VectorizedColumnSelector selector;
 
   public LongSumBufferAggregator(
-      LongColumnSelector selector
+      VectorizedColumnSelector selector
   )
   {
     this.selector = selector;
@@ -45,7 +45,24 @@ public class LongSumBufferAggregator implements BufferAggregator
   @Override
   public void aggregate(ByteBuffer buf, int position)
   {
-    buf.putLong(position, buf.getLong(position) + selector.get());
+    buf.putLong(position, buf.getLong(position) + selector.getLongs()[0]);
+  }
+
+  @Override
+  public void aggregate(ByteBuffer buf, int position, int[] select, int numSelected)
+  {
+    long register = buf.getLong(position);
+    final long[] values = selector.getLongs();
+    if (select == null) {
+      for (int i = 0; i < selector.numUsableElements(); i++) {
+        register += values[i];
+      }
+    } else {
+      for (int i = 0; i < numSelected; i++) {
+        register += values[select[i]];
+      }
+    }
+    buf.putLong(position, register);
   }
 
   @Override

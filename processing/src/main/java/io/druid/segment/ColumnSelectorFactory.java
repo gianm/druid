@@ -30,4 +30,5 @@ public interface ColumnSelectorFactory
   public FloatColumnSelector makeFloatColumnSelector(String columnName);
   public LongColumnSelector makeLongColumnSelector(String columnName);
   public ObjectColumnSelector makeObjectColumnSelector(String columnName);
+  public VectorizedColumnSelector makeVectorizedColumnSelector(String columnName);
 }

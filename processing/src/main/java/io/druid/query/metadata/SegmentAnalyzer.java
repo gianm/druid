@@ -247,8 +247,13 @@ public class SegmentAnalyzer
       final long start = storageAdapter.getMinTime().getMillis();
       final long end = storageAdapter.getMaxTime().getMillis();
 
-      final Sequence<Cursor> cursors =
-          storageAdapter.makeCursors(null, new Interval(start, end), QueryGranularities.ALL, false);
+      final Sequence<Cursor> cursors = storageAdapter.makeCursors(
+          null,
+          new Interval(start, end),
+          QueryGranularities.ALL,
+          false,
+          1 // TODO(gianm): Vectorize query
+      );
 
       size = cursors.accumulate(
           0L,

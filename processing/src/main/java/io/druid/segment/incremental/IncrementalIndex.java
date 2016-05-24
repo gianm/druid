@@ -51,6 +51,7 @@ import io.druid.segment.FloatColumnSelector;
 import io.druid.segment.LongColumnSelector;
 import io.druid.segment.Metadata;
 import io.druid.segment.ObjectColumnSelector;
+import io.druid.segment.VectorizedColumnSelector;
 import io.druid.segment.column.Column;
 import io.druid.segment.column.ColumnCapabilities;
 import io.druid.segment.column.ColumnCapabilitiesImpl;
@@ -338,6 +339,13 @@ public abstract class IncrementalIndex<AggregatorType> implements Iterable<Row>,
           }
         };
       }
+
+      @Override
+      public VectorizedColumnSelector makeVectorizedColumnSelector(String columnName)
+      {
+        // TODO(gianm): Implement
+        throw new UnsupportedOperationException();
+      }
     };
   }
 
@@ -436,7 +444,8 @@ public abstract class IncrementalIndex<AggregatorType> implements Iterable<Row>,
     }
   }
 
-  private DimDim newDimDim(String dimension, ValueType type) {
+  private DimDim newDimDim(String dimension, ValueType type)
+  {
     DimDim newDimDim;
     switch (type) {
       case LONG:
@@ -563,7 +572,8 @@ public abstract class IncrementalIndex<AggregatorType> implements Iterable<Row>,
    *
    * @return the number of rows in the data set after adding the InputRow
    */
-  public int add(InputRow row) throws IndexSizeExceededException {
+  public int add(InputRow row) throws IndexSizeExceededException
+  {
     TimeAndDims key = toTimeAndDims(row);
     final int rv = addToFacts(
         metrics,
@@ -811,7 +821,12 @@ public abstract class IncrementalIndex<AggregatorType> implements Iterable<Row>,
   @GuardedBy("dimensionDescs")
   private DimensionDesc addNewDimension(String dim, ColumnCapabilitiesImpl capabilities)
   {
-    DimensionDesc desc = new DimensionDesc(dimensionDescs.size(), dim, newDimDim(dim, capabilities.getType()), capabilities);
+    DimensionDesc desc = new DimensionDesc(
+        dimensionDescs.size(),
+        dim,
+        newDimDim(dim, capabilities.getType()),
+        capabilities
+    );
     if (dimValues.size() != desc.getIndex()) {
       throw new ISE("dimensionDescs and dimValues for [%s] is out of sync!!", dim);
     }

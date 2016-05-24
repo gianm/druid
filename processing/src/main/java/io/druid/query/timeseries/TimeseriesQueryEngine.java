@@ -20,22 +20,46 @@
 package io.druid.query.timeseries;
 
 import com.google.common.base.Function;
+import com.google.inject.Inject;
+import com.metamx.common.guava.ResourceClosingSequence;
 import com.metamx.common.guava.Sequence;
+import io.druid.collections.ResourceHolder;
+import io.druid.collections.StupidPool;
+import io.druid.guice.annotations.Global;
 import io.druid.query.QueryRunnerHelper;
 import io.druid.query.Result;
-import io.druid.query.aggregation.Aggregator;
 import io.druid.query.aggregation.AggregatorFactory;
+import io.druid.query.aggregation.VectorAggregator;
 import io.druid.segment.Cursor;
 import io.druid.segment.SegmentMissingException;
 import io.druid.segment.StorageAdapter;
 import io.druid.segment.filter.Filters;
 
+import java.nio.ByteBuffer;
 import java.util.List;
 
 /**
  */
 public class TimeseriesQueryEngine
 {
+  private static final int VECTOR_SIZE = 64;
+
+  private final StupidPool<ByteBuffer> bufferPool;
+
+  public TimeseriesQueryEngine()
+  {
+    // TODO(gianm): This is here because I'm too lazy to fix tests
+    this.bufferPool = null;
+  }
+
+  @Inject
+  public TimeseriesQueryEngine(
+      @Global StupidPool<ByteBuffer> bufferPool
+  )
+  {
+    this.bufferPool = bufferPool;
+  }
+
   public Sequence<Result<TimeseriesResultValue>> process(final TimeseriesQuery query, final StorageAdapter adapter)
   {
     if (adapter == null) {
@@ -44,51 +68,68 @@ public class TimeseriesQueryEngine
       );
     }
 
-    return QueryRunnerHelper.makeCursorBasedQuery(
-        adapter,
-        query.getQuerySegmentSpec().getIntervals(),
-        Filters.toFilter(query.getDimensionsFilter()),
-        query.isDescending(),
-        query.getGranularity(),
-        new Function<Cursor, Result<TimeseriesResultValue>>()
-        {
-          private final boolean skipEmptyBuckets = query.isSkipEmptyBuckets();
-          private final List<AggregatorFactory> aggregatorSpecs = query.getAggregatorSpecs();
+    final boolean skipEmptyBuckets = query.isSkipEmptyBuckets();
+    final List<AggregatorFactory> aggregatorSpecs = query.getAggregatorSpecs();
 
-          @Override
-          public Result<TimeseriesResultValue> apply(Cursor cursor)
-          {
-            Aggregator[] aggregators = QueryRunnerHelper.makeAggregators(cursor, aggregatorSpecs);
+    int runningOffset = 0;
+    final int[] aggregatorOffsets = new int[aggregatorSpecs.size()];
+    for (int i = 0; i < aggregatorOffsets.length; i++) {
+      aggregatorOffsets[i] = runningOffset;
+      runningOffset += aggregatorSpecs.get(i).getMaxIntermediateSize();
+    }
 
-            if (skipEmptyBuckets && cursor.isDone()) {
-              return null;
-            }
+    final ResourceHolder<ByteBuffer> bufferHolder = bufferPool.take();
 
-            try {
-              while (!cursor.isDone()) {
-                for (Aggregator aggregator : aggregators) {
-                  aggregator.aggregate();
+    return new ResourceClosingSequence<>(
+        QueryRunnerHelper.makeCursorBasedQuery(
+            adapter,
+            query.getQuerySegmentSpec().getIntervals(),
+            Filters.toFilter(query.getDimensionsFilter()),
+            query.isDescending(),
+            VECTOR_SIZE,
+            query.getGranularity(),
+            new Function<Cursor, Result<TimeseriesResultValue>>()
+            {
+              @Override
+              public Result<TimeseriesResultValue> apply(Cursor cursor)
+              {
+                if (skipEmptyBuckets && cursor.isDone()) {
+                  return null;
                 }
-                cursor.advance();
+
+                final VectorAggregator[] aggregators = new VectorAggregator[aggregatorSpecs.size()];
+                for (int i = 0; i < aggregatorSpecs.size(); i++) {
+                  aggregators[i] = aggregatorSpecs.get(i).factorizeVectored(cursor);
+                }
+
+                final ByteBuffer buffer = bufferHolder.get();
+
+                try {
+                  while (!cursor.isDone()) {
+                    for (int i = 0; i < aggregatorSpecs.size(); i++) {
+                      aggregators[i].aggregate(buffer, aggregatorOffsets[i], null, 0);
+                    }
+                    cursor.advance();
+                  }
+
+                  TimeseriesResultBuilder bob = new TimeseriesResultBuilder(cursor.getTime());
+
+                  for (int i = 0; i < aggregatorSpecs.size(); i++) {
+                    bob.addMetric(aggregatorSpecs.get(i).getName(), aggregators[i].get(buffer, aggregatorOffsets[i]));
+                  }
+
+                  return bob.build();
+                }
+                finally {
+                  // cleanup
+                  for (VectorAggregator agg : aggregators) {
+                    agg.close();
+                  }
+                }
               }
-
-              TimeseriesResultBuilder bob = new TimeseriesResultBuilder(cursor.getTime());
-
-              for (Aggregator aggregator : aggregators) {
-                bob.addMetric(aggregator);
-              }
-
-              Result<TimeseriesResultValue> retVal = bob.build();
-              return retVal;
             }
-            finally {
-              // cleanup
-              for (Aggregator agg : aggregators) {
-                agg.close();
-              }
-            }
-          }
-        }
+        ),
+        bufferHolder
     );
   }
 }

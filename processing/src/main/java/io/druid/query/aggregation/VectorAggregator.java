@@ -17,22 +17,22 @@
  * under the License.
  */
 
-package io.druid.segment;
+package io.druid.query.aggregation;
 
-import com.metamx.common.guava.Sequence;
-import io.druid.granularity.QueryGranularity;
-import io.druid.query.filter.Filter;
-import org.joda.time.Interval;
+import java.nio.ByteBuffer;
 
-/**
- */
-public interface CursorFactory
+// TODO(gianm): Javadocs (similar to BufferAggregator)
+public interface VectorAggregator
 {
-  public Sequence<Cursor> makeCursors(
-      Filter filter,
-      Interval interval,
-      QueryGranularity gran,
-      boolean descending,
-      int vectorSize
-  );
+  void init(ByteBuffer buf, int position);
+
+  void aggregate(ByteBuffer buf, int position, int[] select, int numSelected);
+
+  Object get(ByteBuffer buf, int position);
+
+  float getFloat(ByteBuffer buf, int position);
+
+  long getLong(ByteBuffer buf, int position);
+
+  void close();
 }
