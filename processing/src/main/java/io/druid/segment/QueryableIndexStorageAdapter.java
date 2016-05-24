@@ -359,7 +359,7 @@ public class QueryableIndexStorageAdapter implements StorageAdapter
                       for (int i = 0; i < vectorSize; i++) {
                         if (cursorOffset.withinBounds()) {
                           offsets[i] = cursorOffset.getOffset();
-                          numUsableElements = i;
+                          numUsableElements = i + 1;
                           cursorOffset.increment();
                         } else {
                           break;
@@ -798,7 +798,7 @@ public class QueryableIndexStorageAdapter implements StorageAdapter
                         public float[] getFloats()
                         {
                           for (int i = 0; i < numUsableElements; i++) {
-                            floats[i + 1] = genericColumn.getFloatSingleValueRow(i + 1);
+                            floats[i] = genericColumn.getFloatSingleValueRow(offsets[i]);
                           }
                           return floats;
                         }
@@ -807,7 +807,7 @@ public class QueryableIndexStorageAdapter implements StorageAdapter
                         public long[] getLongs()
                         {
                           for (int i = 0; i < numUsableElements; i++) {
-                            longs[i + 1] = genericColumn.getLongSingleValueRow(i + 1);
+                            longs[i] = genericColumn.getLongSingleValueRow(offsets[i]);
                           }
                           return longs;
                         }

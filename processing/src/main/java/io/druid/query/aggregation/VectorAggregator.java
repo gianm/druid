@@ -26,7 +26,7 @@ public interface VectorAggregator
 {
   void init(ByteBuffer buf, int position);
 
-  void aggregate(ByteBuffer buf, int position, int[] select, int numSelected);
+  void aggregate(ByteBuffer buf, int position, int[] select, int selectLimit);
 
   Object get(ByteBuffer buf, int position);
 

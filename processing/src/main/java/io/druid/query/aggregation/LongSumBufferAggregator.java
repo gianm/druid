@@ -27,6 +27,7 @@ import java.nio.ByteBuffer;
  */
 public class LongSumBufferAggregator implements BufferAggregator, VectorAggregator
 {
+  private static final int UNROLL_COUNT = 8;
   private final VectorizedColumnSelector selector;
 
   public LongSumBufferAggregator(
@@ -49,20 +50,41 @@ public class LongSumBufferAggregator implements BufferAggregator, VectorAggregat
   }
 
   @Override
-  public void aggregate(ByteBuffer buf, int position, int[] select, int numSelected)
+  public void aggregate(ByteBuffer buf, int position, int[] select, int selectLimit)
   {
-    long register = buf.getLong(position);
     final long[] values = selector.getLongs();
+    long sum0 = 0;
+    long sum1 = 0;
+    long sum2 = 0;
+    long sum3 = 0;
+    long sum4 = 0;
+    long sum5 = 0;
+    long sum6 = 0;
+    long sum7 = 0;
+
     if (select == null) {
-      for (int i = 0; i < selector.numUsableElements(); i++) {
-        register += values[i];
+      int unrollable = selector.numUsableElements() / UNROLL_COUNT * UNROLL_COUNT;
+      int i = 0;
+      for (; i < unrollable; i += UNROLL_COUNT) {
+        sum0 += values[i];
+        sum1 += values[i + 1];
+        sum2 += values[i + 2];
+        sum3 += values[i + 3];
+        sum4 += values[i + 4];
+        sum5 += values[i + 5];
+        sum6 += values[i + 6];
+        sum7 += values[i + 7];
+      }
+      for (; i < selector.numUsableElements(); i++) {
+        sum0 += values[i];
       }
     } else {
-      for (int i = 0; i < numSelected; i++) {
-        register += values[select[i]];
+      for (int i = 0; i < selectLimit; i++) {
+        sum0 += values[select[i]];
       }
     }
-    buf.putLong(position, register);
+
+    buf.putLong(position, buf.getLong(position) + sum0 + sum1 + sum2 + sum3 + sum4 + sum5 + sum6 + sum7);
   }
 
   @Override
