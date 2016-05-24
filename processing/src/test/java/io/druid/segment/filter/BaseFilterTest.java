@@ -264,7 +264,8 @@ public abstract class BaseFilterTest
         filter,
         new Interval(JodaUtils.MIN_INSTANT, JodaUtils.MAX_INSTANT),
         QueryGranularities.ALL,
-        false
+        false,
+        1
     );
     return Iterables.getOnlyElement(Sequences.toList(cursors, Lists.<Cursor>newArrayList()));
   }

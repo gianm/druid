@@ -264,7 +264,8 @@ public class IncrementalIndexStorageAdapterTest
           new SelectorFilter("sally", "bo"),
           interval,
           QueryGranularities.NONE,
-          descending
+          descending,
+          1
       );
 
       Cursor cursor = Sequences.toList(Sequences.limit(cursorSequence, 1), Lists.<Cursor>newArrayList()).get(0);
@@ -402,7 +403,7 @@ public class IncrementalIndexStorageAdapterTest
     final StorageAdapter sa = new IncrementalIndexStorageAdapter(index);
 
     Sequence<Cursor> cursors = sa.makeCursors(
-        null, new Interval(timestamp - 60_000, timestamp + 60_000), QueryGranularities.ALL, false
+        null, new Interval(timestamp - 60_000, timestamp + 60_000), QueryGranularities.ALL, false, 1
     );
 
     Sequences.toList(

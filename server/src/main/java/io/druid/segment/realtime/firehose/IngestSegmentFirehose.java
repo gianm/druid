@@ -76,7 +76,8 @@ public class IngestSegmentFirehose implements Firehose
                             Filters.toFilter(dimFilter),
                             adapter.getInterval(),
                             granularity,
-                            false
+                            false,
+                            1
                         ), new Function<Cursor, Sequence<InputRow>>()
                         {
                           @Nullable

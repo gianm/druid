@@ -782,7 +782,7 @@ public class QueryableIndexStorageAdapter implements StorageAdapter
                         public float[] getFloats()
                         {
                           for (int i = 0; i < numUsableElements; i++) {
-                            floats[i] = genericColumn.getFloatSingleValueRow(i);
+                            floats[i + 1] = genericColumn.getFloatSingleValueRow(i + 1);
                           }
                           return floats;
                         }
@@ -791,7 +791,7 @@ public class QueryableIndexStorageAdapter implements StorageAdapter
                         public long[] getLongs()
                         {
                           for (int i = 0; i < numUsableElements; i++) {
-                            longs[i] = genericColumn.getLongSingleValueRow(i);
+                            longs[i + 1] = genericColumn.getLongSingleValueRow(i + 1);
                           }
                           return longs;
                         }
@@ -800,7 +800,7 @@ public class QueryableIndexStorageAdapter implements StorageAdapter
                         public Object[] getObjects()
                         {
                           for (int i = 0; i < numUsableElements; i++) {
-                            objects[i] = complexColumn.getRowValue(i);
+                            objects[i + 1] = complexColumn.getRowValue(i + 1);
                           }
                           return objects;
                         }

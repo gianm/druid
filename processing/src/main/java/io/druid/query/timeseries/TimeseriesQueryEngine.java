@@ -21,6 +21,7 @@ package io.druid.query.timeseries;
 
 import com.google.common.base.Function;
 import com.google.inject.Inject;
+import com.metamx.common.ISE;
 import com.metamx.common.guava.ResourceClosingSequence;
 import com.metamx.common.guava.Sequence;
 import io.druid.collections.ResourceHolder;
@@ -99,7 +100,11 @@ public class TimeseriesQueryEngine
 
                 final VectorAggregator[] aggregators = new VectorAggregator[aggregatorSpecs.size()];
                 for (int i = 0; i < aggregatorSpecs.size(); i++) {
-                  aggregators[i] = aggregatorSpecs.get(i).factorizeVectored(cursor);
+                  final VectorAggregator agg = aggregatorSpecs.get(i).factorizeVectored(cursor);
+                  if (agg == null) {
+                    throw new ISE("Aggregator[%s] cannot be vectorized", aggregatorSpecs.get(i).getName());
+                  }
+                  aggregators[i] = agg;
                 }
 
                 final ByteBuffer buffer = bufferHolder.get();
