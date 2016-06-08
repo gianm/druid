@@ -47,7 +47,7 @@ together with another filter on `Continent = 'Europe'`.
 |`isInputBitmap`|true if fieldName is a bitmap metric column, false if fieldName is a string dimension column.|no (default false)|
 
 If `isInputBitmap` is false, the input must be a string column with 32-bit integers
-encoded as 0-padded big endian hex, e.g. "0000000A" for decimal 10.
+encoded as 0-padded big endian uppercase hex, e.g. "0000000A" for decimal 10.
 
 Output in a query will be an integer indicating the size of the bitmap (i.e.
 the distinct count of aggregated values). If used in a post-aggregator, instead
@@ -148,4 +148,4 @@ technical limitations:
 - Filters on bitmap columns are not supported, only filters on string columns
   whose values can be used to create bitmaps at query time.
 - Only one specific string encoding of integers is supported (0-padded big
-  endian hex).
+  endian uppercase hex).
