@@ -134,7 +134,7 @@ public class BitmapAggregatorQueryTest
             new IncrementalIndexSchema.Builder()
                 .withDimensionsSpec(
                     new DimensionsSpec(
-                        DimensionsSpec.getDefaultSchemas(ImmutableList.of(VISITOR_ID)),
+                        ImmutableList.of(VISITOR_ID),
                         null,
                         null
                     )
