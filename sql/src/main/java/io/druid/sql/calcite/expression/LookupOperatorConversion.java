@@ -23,6 +23,7 @@ import com.google.inject.Inject;
 import io.druid.query.lookup.LookupReferencesManager;
 import io.druid.query.lookup.RegisteredLookupExtractionFn;
 import io.druid.sql.calcite.planner.PlannerContext;
+import io.druid.sql.calcite.table.RowSignature;
 import org.apache.calcite.rex.RexCall;
 import org.apache.calcite.rex.RexLiteral;
 import org.apache.calcite.rex.RexNode;
@@ -34,9 +35,7 @@ import org.apache.calcite.sql.type.ReturnTypes;
 import org.apache.calcite.sql.type.SqlTypeFamily;
 import org.apache.calcite.sql.type.SqlTypeName;
 
-import java.util.List;
-
-public class LookupExtractionOperator implements SqlExtractionOperator
+public class LookupOperatorConversion implements SqlOperatorConversion
 {
   private static final String NAME = "LOOKUP";
   private static final SqlFunction SQL_FUNCTION = new LookupSqlFunction();
@@ -44,47 +43,47 @@ public class LookupExtractionOperator implements SqlExtractionOperator
   private final LookupReferencesManager lookupReferencesManager;
 
   @Inject
-  public LookupExtractionOperator(final LookupReferencesManager lookupReferencesManager)
+  public LookupOperatorConversion(final LookupReferencesManager lookupReferencesManager)
   {
     this.lookupReferencesManager = lookupReferencesManager;
   }
 
   @Override
-  public SqlFunction calciteFunction()
+  public SqlFunction calciteOperator()
   {
     return SQL_FUNCTION;
   }
 
   @Override
-  public RowExtraction convert(
+  public DruidExpression toDruidExpression(
       final PlannerContext plannerContext,
-      final List<String> rowOrder,
-      final RexNode expression
+      final RowSignature rowSignature,
+      final RexNode rexNode
   )
   {
-    final RexCall call = (RexCall) expression;
-    final RowExtraction rex = Expressions.toRowExtraction(
+    final RexCall call = (RexCall) rexNode;
+    final DruidExpression input = Expressions.toDruidExpression(
         plannerContext,
-        rowOrder,
+        rowSignature,
         call.getOperands().get(0)
     );
-    if (rex == null) {
+    if (input == null) {
       return null;
     }
 
     final String lookupName = RexLiteral.stringValue(call.getOperands().get(1));
-    final RegisteredLookupExtractionFn extractionFn = new RegisteredLookupExtractionFn(
-        lookupReferencesManager,
-        lookupName,
-        false,
-        null,
-        false,
-        true
-    );
-
-    return RowExtraction.of(
-        rex.getColumn(),
-        ExtractionFns.compose(extractionFn, rex.getExtractionFn())
+    return input.map(
+        simpleExtraction -> simpleExtraction.cascade(
+            new RegisteredLookupExtractionFn(
+                lookupReferencesManager,
+                lookupName,
+                false,
+                null,
+                false,
+                true
+            )
+        ),
+        expression -> String.format("lookup(%s, %s)", expression, DruidExpression.stringLiteral(lookupName))
     );
   }
 

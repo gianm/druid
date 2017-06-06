@@ -21,51 +21,52 @@ package io.druid.sql.calcite.expression;
 
 import io.druid.query.extraction.SubstringDimExtractionFn;
 import io.druid.sql.calcite.planner.PlannerContext;
+import io.druid.sql.calcite.table.RowSignature;
 import org.apache.calcite.rex.RexCall;
 import org.apache.calcite.rex.RexLiteral;
 import org.apache.calcite.rex.RexNode;
-import org.apache.calcite.sql.SqlFunction;
+import org.apache.calcite.sql.SqlOperator;
 import org.apache.calcite.sql.fun.SqlStdOperatorTable;
 
-import java.util.List;
-
-public class SubstringExtractionOperator implements SqlExtractionOperator
+public class SubstringOperatorConversion implements SqlOperatorConversion
 {
   @Override
-  public SqlFunction calciteFunction()
+  public SqlOperator calciteOperator()
   {
     return SqlStdOperatorTable.SUBSTRING;
   }
 
   @Override
-  public RowExtraction convert(
+  public DruidExpression toDruidExpression(
       final PlannerContext plannerContext,
-      final List<String> rowOrder,
-      final RexNode expression
+      final RowSignature rowSignature,
+      final RexNode rexNode
   )
   {
-    final RexCall call = (RexCall) expression;
-    final RowExtraction arg = Expressions.toRowExtraction(
+    final RexCall call = (RexCall) rexNode;
+    final DruidExpression input = Expressions.toDruidExpression(
         plannerContext,
-        rowOrder,
+        rowSignature,
         call.getOperands().get(0)
     );
-    if (arg == null) {
+    if (input == null) {
       return null;
     }
     final int index = RexLiteral.intValue(call.getOperands().get(1)) - 1;
-    final Integer length;
+    final int length;
     if (call.getOperands().size() > 2) {
       length = RexLiteral.intValue(call.getOperands().get(2));
     } else {
-      length = null;
+      length = -1;
     }
 
-    return RowExtraction.of(
-        arg.getColumn(),
-        ExtractionFns.compose(
-            new SubstringDimExtractionFn(index, length),
-            arg.getExtractionFn()
+    return input.map(
+        simpleExtraction -> simpleExtraction.cascade(new SubstringDimExtractionFn(index, length < 0 ? null : length)),
+        expression -> String.format(
+            "substring(%s, %s, %s)",
+            expression,
+            DruidExpression.numberLiteral(index),
+            DruidExpression.numberLiteral(length)
         )
     );
   }

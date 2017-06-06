@@ -30,7 +30,11 @@ public class TestExprMacroTable extends ExprMacroTable
   {
     super(
         ImmutableList.of(
-            new LikeExprMacro()
+            new LikeExprMacro(),
+            new RegexpExtractExprMacro(),
+            new TimestampCeilExprMacro(),
+            new TimestampFloorExprMacro(),
+            new TimestampFormatExprMacro()
         )
     );
   }
