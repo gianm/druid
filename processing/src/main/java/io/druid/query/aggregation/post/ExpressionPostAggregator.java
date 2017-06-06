@@ -23,7 +23,10 @@ import com.fasterxml.jackson.annotation.JacksonInject;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Maps;
+import io.druid.java.util.common.guava.Comparators;
 import io.druid.math.expr.Expr;
 import io.druid.math.expr.ExprMacroTable;
 import io.druid.math.expr.Parser;
@@ -56,6 +59,7 @@ public class ExpressionPostAggregator implements PostAggregator
   private final Comparator<Comparable> comparator;
   private final String ordering;
   private final ExprMacroTable macroTable;
+  private final Map<String, Function<Object, Object>> finalizers;
 
   private final Expr parsed;
   private final Set<String> dependentFields;
@@ -71,6 +75,20 @@ public class ExpressionPostAggregator implements PostAggregator
       @JacksonInject ExprMacroTable macroTable
   )
   {
+    this(name, expression, ordering, macroTable, null);
+  }
+
+  /**
+   * Constructor for {@link #decorate(Map)}.
+   */
+  private ExpressionPostAggregator(
+      final String name,
+      final String expression,
+      final String ordering,
+      final ExprMacroTable macroTable,
+      final Map<String, Function<Object, Object>> finalizers
+  )
+  {
     Preconditions.checkArgument(expression != null, "expression cannot be null");
 
     this.name = name;
@@ -78,13 +96,10 @@ public class ExpressionPostAggregator implements PostAggregator
     this.ordering = ordering;
     this.comparator = ordering == null ? DEFAULT_COMPARATOR : Ordering.valueOf(ordering);
     this.macroTable = macroTable;
+    this.finalizers = finalizers != null ? ImmutableMap.copyOf(finalizers) : ImmutableMap.of();
+
     this.parsed = Parser.parse(expression, macroTable);
     this.dependentFields = ImmutableSet.copyOf(Parser.findRequiredBindings(parsed));
-  }
-
-  public ExpressionPostAggregator(String name, String fnName)
-  {
-    this(name, fnName, null, ExprMacroTable.nil());
   }
 
   @Override
@@ -102,7 +117,16 @@ public class ExpressionPostAggregator implements PostAggregator
   @Override
   public Object compute(Map<String, Object> values)
   {
-    return parsed.eval(Parser.withMap(values)).value();
+    // Maps.transformEntries is lazy, will only finalize values we actually read.
+    final Map<String, Object> finalizedValues = Maps.transformEntries(
+        values,
+        (String k, Object v) -> {
+          final Function<Object, Object> finalizer = finalizers.get(k);
+          return finalizer != null ? finalizer.apply(v) : v;
+        }
+    );
+
+    return parsed.eval(Parser.withMap(finalizedValues)).value();
   }
 
   @Override
@@ -113,9 +137,17 @@ public class ExpressionPostAggregator implements PostAggregator
   }
 
   @Override
-  public ExpressionPostAggregator decorate(Map<String, AggregatorFactory> aggregators)
+  public ExpressionPostAggregator decorate(final Map<String, AggregatorFactory> aggregators)
   {
-    return this;
+    return new ExpressionPostAggregator(
+        name, expression, ordering, macroTable,
+        aggregators.entrySet().stream().collect(
+            Collectors.toMap(
+                entry -> entry.getKey(),
+                entry -> entry.getValue()::finalizeComputation
+            )
+        )
+    );
   }
 
   @JsonProperty("expression")
