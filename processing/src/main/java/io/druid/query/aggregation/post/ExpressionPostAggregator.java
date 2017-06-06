@@ -35,26 +35,25 @@ import java.util.Comparator;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
-/**
- */
 public class ExpressionPostAggregator implements PostAggregator
 {
-  private static final Comparator<Number> DEFAULT_COMPARATOR = new Comparator<Number>()
-  {
-    @Override
-    public int compare(Number o1, Number o2)
-    {
-      if (o1 instanceof Long && o2 instanceof Long) {
-        return Long.compare(o1.longValue(), o2.longValue());
-      }
-      return Double.compare(o1.doubleValue(), o2.doubleValue());
-    }
-  };
+  private static final Comparator<Comparable> DEFAULT_COMPARATOR = Comparator.nullsFirst(
+      (Comparable o1, Comparable o2) -> {
+        if (o1 instanceof Long && o2 instanceof Long) {
+          return Long.compare((long) o1, (long) o2);
+        } else if (o1 instanceof Number && o2 instanceof Number) {
+          return Double.compare(((Number) o1).doubleValue(), ((Number) o2).doubleValue());
+        } else {
+          return o1.compareTo(o2);
+        }
+      });
 
   private final String name;
   private final String expression;
-  private final Comparator comparator;
+  private final Comparator<Comparable> comparator;
   private final String ordering;
   private final ExprMacroTable macroTable;
 
@@ -150,31 +149,28 @@ public class ExpressionPostAggregator implements PostAggregator
         .build();
   }
 
-  public static enum Ordering implements Comparator<Number>
+  public enum Ordering implements Comparator<Comparable>
   {
     // ensures the following order: numeric > NaN > Infinite
     numericFirst {
       @Override
-      public int compare(Number lhs, Number rhs)
+      public int compare(Comparable lhs, Comparable rhs)
       {
         if (lhs instanceof Long && rhs instanceof Long) {
-          return Long.compare(lhs.longValue(), rhs.longValue());
+          return Long.compare(((Number) lhs).longValue(), ((Number) rhs).longValue());
+        } else if (lhs instanceof Number && rhs instanceof Number) {
+          double d1 = ((Number) lhs).doubleValue();
+          double d2 = ((Number) rhs).doubleValue();
+          if (Double.isFinite(d1) && !Double.isFinite(d2)) {
+            return 1;
+          }
+          if (!Double.isFinite(d1) && Double.isFinite(d2)) {
+            return -1;
+          }
+          return Double.compare(d1, d2);
+        } else {
+          return Comparators.naturalNullsFirst().compare(lhs, rhs);
         }
-        double d1 = lhs.doubleValue();
-        double d2 = rhs.doubleValue();
-        if (isFinite(d1) && !isFinite(d2)) {
-          return 1;
-        }
-        if (!isFinite(d1) && isFinite(d2)) {
-          return -1;
-        }
-        return Double.compare(d1, d2);
-      }
-
-      // Double.isFinite only exist in JDK8
-      private boolean isFinite(double value)
-      {
-        return !Double.isInfinite(value) && !Double.isNaN(value);
       }
     }
   }

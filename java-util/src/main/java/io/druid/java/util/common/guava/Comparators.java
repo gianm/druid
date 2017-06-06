@@ -19,6 +19,7 @@
 
 package io.druid.java.util.common.guava;
 
+import com.google.common.collect.Ordering;
 import com.google.common.primitives.Longs;
 import org.joda.time.DateTimeComparator;
 import org.joda.time.Interval;
@@ -35,6 +36,7 @@ public class Comparators
    *
    * @param baseComp
    * @param <T>
+   *
    * @return
    */
   public static <T> Comparator<T> inverse(final Comparator<T> baseComp)
@@ -53,6 +55,7 @@ public class Comparators
    * Use Guava Ordering.natural() instead
    *
    * @param <T>
+   *
    * @return
    */
   @Deprecated
@@ -67,6 +70,8 @@ public class Comparators
       }
     };
   }
+
+  private static final Comparator<?> NATURAL_NULLS_FIRST = Ordering.natural().nullsFirst();
 
   private static final Comparator<Interval> INTERVAL_BY_START_THEN_END = new Comparator<Interval>()
   {
@@ -116,6 +121,12 @@ public class Comparators
   public static Comparator<Interval> intervals()
   {
     return intervalsByStartThenEnd();
+  }
+
+  @SuppressWarnings("unchecked")
+  public static <T> Comparator<T> naturalNullsFirst()
+  {
+    return (Comparator<T>) NATURAL_NULLS_FIRST;
   }
 
   public static Comparator<Interval> intervalsByStartThenEnd()
