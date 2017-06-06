@@ -28,6 +28,7 @@ import io.druid.java.util.common.granularity.Granularities;
 import io.druid.java.util.common.guava.Sequence;
 import io.druid.java.util.common.guava.Sequences;
 import io.druid.js.JavaScriptConfig;
+import io.druid.math.expr.ExprMacroTable;
 import io.druid.query.aggregation.BufferAggregator;
 import io.druid.query.aggregation.DoubleSumAggregatorFactory;
 import io.druid.query.aggregation.JavaScriptAggregatorFactory;
@@ -112,7 +113,8 @@ public class ExpressionBenchmark
     this.expressionAggregatorFactory = new DoubleSumAggregatorFactory(
         "name",
         null,
-        "if(x>0,1.0+x,y+1)"
+        "if(x>0,1.0+x,y+1)",
+        ExprMacroTable.nil()
     );
   }
 
