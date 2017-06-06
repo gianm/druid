@@ -3524,6 +3524,36 @@ public class CalciteQueryTest
   }
 
   @Test
+  public void testSillyQuarters() throws Exception
+  {
+    // Like FLOOR(__time TO QUARTER) but silly.
+
+    testQuery(
+        "SELECT CAST((EXTRACT(MONTH FROM __time) - 1 ) / 3 + 1 AS INTEGER) AS quarter, COUNT(*)\n"
+        + "FROM foo\n"
+        + "GROUP BY CAST((EXTRACT(MONTH FROM __time) - 1 ) / 3 + 1 AS INTEGER)",
+        ImmutableList.of(
+            GroupByQuery.builder()
+                        .setDataSource(CalciteTests.DATASOURCE1)
+                        .setInterval(QSS(Filtration.eternity()))
+                        .setGranularity(Granularities.ALL)
+                        .setVirtualColumns(EXPRESSION_VIRTUAL_COLUMN(
+                            "d0:v",
+                            "(((timestamp_extract(\"__time\",'MONTH','UTC') - 1) / 3) + 1)",
+                            ValueType.LONG
+                        ))
+                        .setDimensions(DIMS(new DefaultDimensionSpec("d0:v", "d0", ValueType.LONG)))
+                        .setAggregatorSpecs(AGGS(new CountAggregatorFactory("a0")))
+                        .setContext(QUERY_CONTEXT_DEFAULT)
+                        .build()
+        ),
+        ImmutableList.of(
+            new Object[]{1, 6L}
+        )
+    );
+  }
+
+  @Test
   public void testRegexpExtract() throws Exception
   {
     testQuery(
