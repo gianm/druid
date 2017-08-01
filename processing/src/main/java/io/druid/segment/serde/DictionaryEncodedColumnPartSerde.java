@@ -63,7 +63,8 @@ public class DictionaryEncodedColumnPartSerde implements ColumnPartSerde
   enum Feature
   {
     MULTI_VALUE,
-    MULTI_VALUE_V3;
+    MULTI_VALUE_V3,
+    NO_BITMAP_INDEX;
 
     public boolean isSet(int flags)
     {
@@ -144,7 +145,7 @@ public class DictionaryEncodedColumnPartSerde implements ColumnPartSerde
   public static class SerializerBuilder
   {
     private VERSION version = null;
-    private int flags = NO_FLAGS;
+    private int flags = Feature.NO_BITMAP_INDEX.getMask();
     private GenericIndexedWriter<String> dictionaryWriter = null;
     private IndexedIntsWriter valueWriter = null;
     private BitmapSerdeFactory bitmapSerdeFactory = null;
@@ -166,6 +167,9 @@ public class DictionaryEncodedColumnPartSerde implements ColumnPartSerde
 
     public SerializerBuilder withBitmapIndex(GenericIndexedWriter<ImmutableBitmap> bitmapIndexWriter)
     {
+      if (bitmapIndexWriter != null) {
+        flags &= ~Feature.NO_BITMAP_INDEX.getMask();
+      }
       this.bitmapIndexWriter = bitmapIndexWriter;
       return this;
     }
@@ -312,23 +316,24 @@ public class DictionaryEncodedColumnPartSerde implements ColumnPartSerde
                    )
                );
 
-        GenericIndexed<ImmutableBitmap> rBitmaps = GenericIndexed.read(
-            buffer, bitmapSerdeFactory.getObjectStrategy(), builder.getFileMapper()
-        );
-        builder.setBitmapIndex(
-            new BitmapIndexColumnPartSupplier(
-                bitmapSerdeFactory.getBitmapFactory(),
-                rBitmaps,
-                rDictionary
-            )
-        );
-
-        ImmutableRTree rSpatialIndex = null;
-        if (buffer.hasRemaining()) {
-          rSpatialIndex = ByteBufferSerializer.read(
-              buffer, new IndexedRTree.ImmutableRTreeObjectStrategy(bitmapSerdeFactory.getBitmapFactory())
+        if (!Feature.NO_BITMAP_INDEX.isSet(rFlags)) {
+          GenericIndexed<ImmutableBitmap> rBitmaps = GenericIndexed.read(
+              buffer, bitmapSerdeFactory.getObjectStrategy(), builder.getFileMapper()
           );
-          builder.setSpatialIndex(new SpatialIndexColumnPartSupplier(rSpatialIndex));
+          builder.setBitmapIndex(
+              new BitmapIndexColumnPartSupplier(
+                  bitmapSerdeFactory.getBitmapFactory(),
+                  rBitmaps,
+                  rDictionary
+              )
+          );
+
+          if (buffer.hasRemaining()) {
+            ImmutableRTree rSpatialIndex = ByteBufferSerializer.read(
+                buffer, new IndexedRTree.ImmutableRTreeObjectStrategy(bitmapSerdeFactory.getBitmapFactory())
+            );
+            builder.setSpatialIndex(new SpatialIndexColumnPartSupplier(rSpatialIndex));
+          }
         }
       }
 

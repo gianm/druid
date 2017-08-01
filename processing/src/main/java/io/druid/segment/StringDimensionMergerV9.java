@@ -274,6 +274,12 @@ public class StringDimensionMergerV9 implements DimensionMergerV9<int[]>
   @Override
   public void writeIndexes(List<IntBuffer> segmentRowNumConversions, Closer closer) throws IOException
   {
+    if (!capabilities.hasBitmapIndexes()) {
+      // Just close encodedValueWriter and return.
+      encodedValueWriter.close();
+      return;
+    }
+
     long dimStartTime = System.currentTimeMillis();
     final BitmapSerdeFactory bitmapSerdeFactory = indexSpec.getBitmapSerdeFactory();
 
@@ -299,14 +305,7 @@ public class StringDimensionMergerV9 implements DimensionMergerV9<int[]>
         // these buffers are used by dictIdSeeker in mergeBitmaps() below. The iterator is created and only used
         // in writeMergedValueMetadata(), but the buffers are still used until after mergeBitmaps().
         Closeable toCloseDictionaryMergeIterator = dictionaryMergeIterator;
-        Closeable dimValsMappedUnmapper = new Closeable()
-    {
-      @Override
-      public void close()
-      {
-        ByteBufferUtils.unmap(dimValsMapped);
-      }
-    }) {
+        Closeable dimValsMappedUnmapper = () -> ByteBufferUtils.unmap(dimValsMapped)) {
       Indexed<String> dimVals = GenericIndexed.read(dimValsMapped, GenericIndexed.STRING_STRATEGY);
       BitmapFactory bmpFactory = bitmapSerdeFactory.getBitmapFactory();
 

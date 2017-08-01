@@ -58,14 +58,7 @@ public class DimensionsSpec
   {
     return Lists.transform(
         dimNames,
-        new Function<String, DimensionSchema>()
-        {
-          @Override
-          public DimensionSchema apply(String input)
-          {
-            return new StringDimensionSchema(input, multiValueHandling);
-          }
-        }
+        input -> new StringDimensionSchema(input, multiValueHandling, true)
     );
   }
 
