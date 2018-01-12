@@ -35,14 +35,14 @@ MiddleManagers start Hadoop jobs that
 - [Kafka indexing service](../development/extensions-core/kafka-ingestion.html).
 - [Tranquility](stream-push.html).
 
-## Comparison of all methods
+## Comparisons
 
-The table below includes all Druid ingestion methods, including less common ones, with comparisons between them.
+The table below includes comparisons between common Druid ingestion methods, to help you choose the best one for your
+situation.
 
-|Method|Type|Description|Required|
-|------|----|-----------|--------|
-|Hadoop|
-|Native batch|
-|Kafka indexing service|
-|Tranquility|
-||
+|Method|How it works|Append or overwrite?|Can handle late data?|Exactly-once guarantees?|Real-time queries?|
+|------|------------|--------------------|---------------------|------------------------|------------------|
+|Hadoop||Yes|Yes|No|
+|Native batch|||Yes|No|
+|Kafka indexing service|||Yes|Yes|
+|Tranquility|An external system uses Tranquility, a client side library, to write|No - late data is dropped.|No|Yes|
