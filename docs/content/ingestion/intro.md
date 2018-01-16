@@ -6,8 +6,10 @@ layout: doc_page
 
 ## Concepts
 
+
+
 Druid supports a variety of data ingestion methods, also called _indexing_ methods. In general, with any method, Druid
-will load data from some external source, convert it into Druid's columnar format, and then store it in immutable
+will load data from some external location, convert it into Druid's columnar format, and then store it in immutable
 _segments_ in your [deep storage](../dependencies/deep-storage.html). In most ingestion methods, this work is done by
 Druid MiddleManager nodes. One exception is Hadoop-based ingestion, where this work is instead done using a Hadoop
 MapReduce job on YARN (although MiddleManager nodes are still involved in starting and monitoring the Hadoop jobs).
@@ -18,6 +20,13 @@ on MiddleManager nodes before it is finished being converted and written to deep
 of data will be in-flight on MiddleManager nodes relative to the larger amount of historical data being served from
 Historical nodes.
 
+All Druid datasources are partitioned by time. Each data ingestion method must acquire a write lock on a particular
+time range when loading data, so no two methods can operate on the same time range of the same datasource at the same
+time. However, two data ingestion methods _can_ operate on different time ranges of the same datasource at the same
+time. For example, you can do a batch backfill from Hadoop while also doing a real-time load from Kafka, so long as
+the backfill data and the real-time data do not need to be written to the same time partitions. (If they do, the
+real-time load will take priority.)
+
 It is important to recognize that even though Druid uses deep storage as a backup of your data, Historical nodes must
 prefetch all active segments to their local disks before any queries are served. This means that Druid never needs to
 access deep storage during a query, helping it offer the best query latencies possible. It also means that you must
@@ -27,22 +36,12 @@ See the [Design](../design/design.html) page for more details on how Druid store
 
 ## Common methods
 
-Druid's most common data ingestion methods are listed below.
+Druid's most common data ingestion methods are listed in the table below, along with comparisons to help you choose
+the best one for your situation.
 
-- [Hadoop](hadoop.html), where Druid loads data directly from Hadoop using Hadoop jobs on YARN. In this case, Druid
-MiddleManagers start Hadoop jobs that
-- [Native batch](native-batch.html).
-- [Kafka indexing service](../development/extensions-core/kafka-ingestion.html).
-- [Tranquility](stream-push.html).
-
-## Comparisons
-
-The table below includes comparisons between common Druid ingestion methods, to help you choose the best one for your
-situation.
-
-|Method|How it works|Append or overwrite?|Can handle late data?|Exactly-once guarantees?|Real-time queries?|
-|------|------------|--------------------|---------------------|------------------------|------------------|
-|Hadoop||Yes|Yes|No|
-|Native batch|||Yes|No|
-|Kafka indexing service|||Yes|Yes|
-|Tranquility|An external system uses Tranquility, a client side library, to write|No - late data is dropped.|No|Yes|
+|Method|How it works|Can append and overwrite?|Can handle late data?|Exactly-once ingestion?|Real-time queries?|
+|------|------------|-------------------------|---------------------|-----------------------|------------------|
+|[Hadoop](hadoop.html)||Append or overwrite|Yes|Yes|No|
+|[Native batch](native-batch.html)||Append or overwrite|Yes|Yes|No|
+|[Kafka indexing service](../development/extensions-core/kafka-ingestion.html)|Druid reads from Kafka in an exactly-once, scalable manner.|Append only|Yes|Yes|Yes|
+|[Tranquility](stream-push.html)|An external system uses Tranquility, a client side library, to push individual records into Druid.|No - late data is dropped|No - may drop or duplicate data|Yes|
