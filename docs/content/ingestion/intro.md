@@ -4,7 +4,7 @@ layout: doc_page
 
 # Data ingestion: overview
 
-## Concepts
+## Ingestion concepts
 
 Druid supports a variety of data ingestion methods, also called _indexing_ methods. In general, with any method, Druid
 will load data from some external location, convert it into Druid's columnar format, and then store it in immutable
@@ -31,9 +31,11 @@ read pre-fetched segments from their local disks before any queries are served. 
 access deep storage during a query, helping it offer the best query latencies possible. It also means that you must
 have enough disk space both in deep storage and across your Historical nodes for the data you plan to load.
 
-See the [Design](../design/design.html) page for more details on how Druid stores and manages your data.
+See the [Design](design.html) page for more details on how Druid stores and manages your data.
 
-## Common methods
+## Batch vs. streaming
+
+## Comparison of ingestion methods
 
 Druid's most common data ingestion methods are listed in the table below, along with comparisons to help you choose
 the best one for your situation.
@@ -43,4 +45,4 @@ the best one for your situation.
 |[Hadoop](hadoop.html)||Append or overwrite|Yes|Yes|No|
 |[Native batch](native-batch.html)||Append or overwrite|Yes|Yes|No|
 |[Kafka indexing service](../development/extensions-core/kafka-ingestion.html)|Druid reads from Kafka in an exactly-once, scalable manner.|Append only|Yes|Yes|Yes|
-|[Tranquility](stream-push.html)|An external system uses Tranquility, a client side library, to push individual records into Druid.|No - late data is dropped|No - may drop or duplicate data|Yes|
+|[Tranquility](stream-push.html)|An external system uses Tranquility, a client side library, to push individual records into Druid.|Append only|No - late data is dropped|No - may drop or duplicate data|Yes|

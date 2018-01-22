@@ -2,6 +2,15 @@
 layout: toc
 ---
 
+## System design
+  * [What is Druid?](/docs/VERSION/design/index.html#whatis)
+  * [Key features](/docs/VERSION/design/index.html#keyfeatures)
+  * [How Druid stores data](/docs/VERSION/design/index.html#storage)
+  * [How Druid queries data](/docs/VERSION/design/index.html#query)
+
+## Querying
+  *
+
 ## Getting Started
   * [Concepts](/docs/VERSION/design/)
   * [Quickstart](/docs/VERSION/tutorials/quickstart.html)

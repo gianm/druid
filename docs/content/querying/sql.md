@@ -77,6 +77,8 @@ query.
 Add "EXPLAIN PLAN FOR" to the beginning of any query to see how it would be run as a native Druid query. In this case,
 the query will not actually be executed.
 
+## Functions and operators
+
 ### Aggregation functions
 
 Aggregation functions can appear in the SELECT clause of any query. Any aggregator can be filtered using syntax like
@@ -421,7 +423,7 @@ Connection context can be specified as JDBC connection properties or as a "conte
 |`useApproximateTopN`|Whether to use approximate [TopN queries](topnquery.html) when a SQL query could be expressed as such. If false, exact [GroupBy queries](groupbyquery.html) will be used instead.|druid.sql.planner.useApproximateTopN on the broker|
 |`useFallback`|Whether to evaluate operations on the broker when they cannot be expressed as Druid queries. This option is not recommended for production since it can generate unscalable query plans. If false, SQL queries that cannot be translated to Druid queries will fail.|druid.sql.planner.useFallback on the broker|
 
-### Retrieving metadata
+## System tables
 
 Druid brokers infer table and column metadata for each dataSource from segments loaded in the cluster, and use this to
 plan SQL queries. This metadata is cached on broker startup and also updated periodically in the background through
