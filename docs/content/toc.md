@@ -2,14 +2,40 @@
 layout: toc
 ---
 
-## System design
+## [Design](/docs/VERSION/design/index.html)
   * [What is Druid?](/docs/VERSION/design/index.html#whatis)
   * [Key features](/docs/VERSION/design/index.html#keyfeatures)
   * [How Druid stores data](/docs/VERSION/design/index.html#storage)
   * [How Druid queries data](/docs/VERSION/design/index.html#query)
 
-## Querying
-  *
+## Setup
+  * [Building a cluster](/docs/VERSION/setup/cluster.html)
+    * [Suggested hardware](/docs/VERSION/setup/cluster.html#hardware)
+    * [Server types](/docs/VERSION/setup/cluster.html#servertypes)
+    * [High availability](/docs/VERSION/setup/cluster.html#ha)
+    * [Backup](/docs/VERSION/setup/cluster.html#backup)
+  * [Metadata store](/docs/VERSION/setup/metadata-store.html)
+  * [Deep storage](/docs/VERSION/setup/deep-storage.html)
+  * [Extensions](/docs/VERSION/setup/extensions.html)
+
+## Datasources
+  * [Ingestion](/docs/VERSION/ingest/index.html)
+    * [Datasources and schemas](/docs/VERSION/ingest/index.html#datasources)
+    * [Inserts, overwrites, and deletes](/docs/VERSION/ingest/index.html#iod)
+    * [Partitioning](/docs/VERSION/ingest/index.html#partitioning)
+    * [Rollup](/docs/VERSION/ingest/index.html#rollup)
+    * [Comparison of ingestion methods](/docs/VERSION/ingest/index.html#compare)
+  * Ingestion methods
+    * [Hadoop](/docs/VERSION/ingest/hadoop.html)
+    * [Native batch](/docs/VERSION/ingest/native-batch.html)
+    * [Kafka](/docs/VERSION/ingest/kafka.html)
+    * [Tranquility](/docs/VERSION/ingest/tranquility.html)
+  * [Data management](/docs/VERSION/ingest/manage.html)
+    * [Tiers](/docs/VERSION/ingest/manage.html#tiers)
+    * [Retention rules](/docs/VERSION/ingest/manage.html#rules)
+    * [Reindexing](/docs/VERSION/ingest/manage.html#reindex)
+    * [Compaction](/docs/VERSION/ingest/manage.html#compact)
+    * [Dropping data](/docs/VERSION/ingest/manage.html#drop)
 
 ## Getting Started
   * [Concepts](/docs/VERSION/design/)
