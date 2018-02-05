@@ -106,7 +106,7 @@ public class TopNBenchmark
   @Param({"750000"})
   private int rowsPerSegment;
 
-  @Param({"basic.A", "basic.numericSort", "basic.alphanumericSort"})
+  @Param({"basic.A"})
   private String schemaAndQuery;
 
   @Param({"10"})

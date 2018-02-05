@@ -38,6 +38,7 @@ import io.druid.segment.data.ArrayIndexed;
 import io.druid.segment.data.BitmapSerdeFactory;
 import io.druid.segment.data.BitmapValues;
 import io.druid.segment.data.ByteBufferWriter;
+import io.druid.segment.data.FastPforIntsSerializer;
 import io.druid.segment.data.V3CompressedVSizeColumnarMultiIntsSerializer;
 import io.druid.segment.data.CompressedVSizeColumnarIntsSerializer;
 import io.druid.segment.data.CompressionStrategy;
@@ -209,16 +210,17 @@ public class StringDimensionMergerV9 implements DimensionMergerV9<int[]>
         encodedValueWriter = new VSizeColumnarMultiIntsSerializer(segmentWriteOutMedium, cardinality);
       }
     } else {
-      if (compressionStrategy != CompressionStrategy.UNCOMPRESSED) {
-        encodedValueWriter = CompressedVSizeColumnarIntsSerializer.create(
-            segmentWriteOutMedium,
-            filenameBase,
-            cardinality,
-            compressionStrategy
-        );
-      } else {
-        encodedValueWriter = new VSizeColumnarIntsSerializer(segmentWriteOutMedium, cardinality);
-      }
+//      if (compressionStrategy != CompressionStrategy.UNCOMPRESSED) {
+//        encodedValueWriter = CompressedVSizeColumnarIntsSerializer.create(
+//            segmentWriteOutMedium,
+//            filenameBase,
+//            cardinality,
+//            compressionStrategy
+//        );
+//      } else {
+//        encodedValueWriter = new VSizeColumnarIntsSerializer(segmentWriteOutMedium, cardinality);
+//      }
+      encodedValueWriter = new FastPforIntsSerializer(segmentWriteOutMedium, 1 << 14);
     }
     encodedValueWriter.open();
   }

@@ -23,12 +23,17 @@ import io.druid.java.util.common.io.Closer;
 import io.druid.segment.data.ColumnarInts;
 import io.druid.segment.data.CompressedVSizeColumnarIntsSupplier;
 import io.druid.segment.data.CompressionStrategy;
+import io.druid.segment.data.FastPforIntsSerializer;
+import io.druid.segment.data.FastPforIntsSupplier;
 import io.druid.segment.data.IndexedInts;
 import io.druid.segment.data.VSizeColumnarInts;
 import io.druid.segment.data.WritableSupplier;
+import io.druid.segment.writeout.OnHeapMemorySegmentWriteOutMedium;
+import io.druid.segment.writeout.SegmentWriteOutMedium;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
+import org.openjdk.jmh.annotations.Fork;
 import org.openjdk.jmh.annotations.Mode;
 import org.openjdk.jmh.annotations.OutputTimeUnit;
 import org.openjdk.jmh.annotations.Param;
@@ -37,25 +42,29 @@ import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.infra.Blackhole;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.channels.Channels;
 import java.nio.channels.WritableByteChannel;
 import java.util.BitSet;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
 
 @State(Scope.Benchmark)
+@Fork(value = 1)
 public class CompressedColumnarIntsBenchmark
 {
   private IndexedInts uncompressed;
   private IndexedInts compressed;
+  private IndexedInts fastPfor;
 
-  @Param({"1", "2", "3", "4"})
+  @Param({"4"})
   int bytes;
 
   // Number of rows to read, the test will read random rows
-  @Param({"1000", "10000", "100000", "1000000", "1000000"})
+  @Param({"1000000"})
   int filteredRowCount;
 
   private BitSet filter;
@@ -79,13 +88,26 @@ public class CompressedColumnarIntsBenchmark
             Closer.create()
         )
     );
+    System.out.println("compressed = " + bufferCompressed.remaining());
     this.compressed = CompressedVSizeColumnarIntsSupplier.fromByteBuffer(
         bufferCompressed,
         ByteOrder.nativeOrder()
     ).get();
 
     final ByteBuffer bufferUncompressed = serialize(VSizeColumnarInts.fromArray(vals));
+    System.out.println("uncompressed = " + bufferUncompressed.remaining());
     this.uncompressed = VSizeColumnarInts.readFromByteBuffer(bufferUncompressed);
+
+    final SegmentWriteOutMedium segmentWriteOutMedium = new OnHeapMemorySegmentWriteOutMedium();
+    final FastPforIntsSerializer fastPforSerializer = new FastPforIntsSerializer(segmentWriteOutMedium, 1 << 14);
+    fastPforSerializer.open();
+    for (int val : vals) {
+      fastPforSerializer.add(val);
+    }
+    final ByteArrayOutputStream baos = new ByteArrayOutputStream();
+    System.out.println("fastPfor = " + fastPforSerializer.getSerializedSize());
+    fastPforSerializer.writeTo(Channels.newChannel(baos), null);
+    this.fastPfor = FastPforIntsSupplier.fromByteBuffer(ByteBuffer.wrap(baos.toByteArray())).get();
 
     filter = new BitSet();
     for (int i = 0; i < filteredRowCount; i++) {
@@ -135,7 +157,7 @@ public class CompressedColumnarIntsBenchmark
   @OutputTimeUnit(TimeUnit.MICROSECONDS)
   public void uncompressed(Blackhole blackhole)
   {
-    for (int i = filter.nextSetBit(0); i >= 0; i = filter.nextSetBit(i + 1)) {
+    for (int i = 0; i < 0x100000; i ++) {
       blackhole.consume(uncompressed.get(i));
     }
   }
@@ -145,8 +167,18 @@ public class CompressedColumnarIntsBenchmark
   @OutputTimeUnit(TimeUnit.MICROSECONDS)
   public void compressed(Blackhole blackhole)
   {
-    for (int i = filter.nextSetBit(0); i >= 0; i = filter.nextSetBit(i + 1)) {
+    for (int i = 0; i < 0x100000; i ++) {
       blackhole.consume(compressed.get(i));
+    }
+  }
+
+  @Benchmark
+  @BenchmarkMode(Mode.AverageTime)
+  @OutputTimeUnit(TimeUnit.MICROSECONDS)
+  public void fastPfor(Blackhole blackhole)
+  {
+    for (int i = 0; i < 0x100000; i ++) {
+      blackhole.consume(fastPfor.get(i));
     }
   }
 }

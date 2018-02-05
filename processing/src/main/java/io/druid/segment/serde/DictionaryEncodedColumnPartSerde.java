@@ -39,10 +39,11 @@ import io.druid.segment.data.ColumnarIntsSerializer;
 import io.druid.segment.data.ColumnarMultiInts;
 import io.druid.segment.data.CompressedVSizeColumnarIntsSupplier;
 import io.druid.segment.data.CompressedVSizeColumnarMultiIntsSupplier;
-import io.druid.segment.data.V3CompressedVSizeColumnarMultiIntsSupplier;
+import io.druid.segment.data.FastPforIntsSupplier;
 import io.druid.segment.data.GenericIndexed;
 import io.druid.segment.data.GenericIndexedWriter;
 import io.druid.segment.data.ImmutableRTreeObjectStrategy;
+import io.druid.segment.data.V3CompressedVSizeColumnarMultiIntsSupplier;
 import io.druid.segment.data.VSizeColumnarInts;
 import io.druid.segment.data.VSizeColumnarMultiInts;
 import io.druid.segment.data.WritableSupplier;
@@ -80,7 +81,6 @@ public class DictionaryEncodedColumnPartSerde implements ColumnPartSerde
     UNCOMPRESSED_SINGLE_VALUE,  // 0x0
     UNCOMPRESSED_MULTI_VALUE,   // 0x1
     COMPRESSED;                 // 0x2
-
 
     public static VERSION fromByte(byte b)
     {
@@ -331,14 +331,15 @@ public class DictionaryEncodedColumnPartSerde implements ColumnPartSerde
 
       private WritableSupplier<ColumnarInts> readSingleValuedColumn(VERSION version, ByteBuffer buffer)
       {
-        switch (version) {
-          case UNCOMPRESSED_SINGLE_VALUE:
-            return VSizeColumnarInts.readFromByteBuffer(buffer);
-          case COMPRESSED:
-            return CompressedVSizeColumnarIntsSupplier.fromByteBuffer(buffer, byteOrder);
-          default:
-            throw new IAE("Unsupported single-value version[%s]", version);
-        }
+        return FastPforIntsSupplier.fromByteBuffer(buffer);
+//        switch (version) {
+//          case UNCOMPRESSED_SINGLE_VALUE:
+//            return VSizeColumnarInts.readFromByteBuffer(buffer);
+//          case COMPRESSED:
+//            return CompressedVSizeColumnarIntsSupplier.fromByteBuffer(buffer, byteOrder);
+//          default:
+//            throw new IAE("Unsupported single-value version[%s]", version);
+//        }
       }
 
       private WritableSupplier<ColumnarMultiInts> readMultiValuedColumn(
