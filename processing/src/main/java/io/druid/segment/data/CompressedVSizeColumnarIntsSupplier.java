@@ -104,6 +104,11 @@ public class CompressedVSizeColumnarIntsSupplier implements WritableSupplier<Col
     }
   }
 
+  public static void main(String[] args)
+  {
+    System.out.println(maxIntsInBufferForValue(1 << 15));
+  }
+
   public static int maxIntsInBufferForValue(int maxValue)
   {
     return maxIntsInBufferForBytes(VSizeColumnarInts.getNumBytesForMax(maxValue));

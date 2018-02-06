@@ -69,7 +69,7 @@ public class FastPforIntsSerializer extends SingleValueColumnarIntsSerializer
 
   static SkippableIntegerCODEC makeCodec()
   {
-    return new SkippableComposition(new FastPFOR(), new VariableByte());
+    return new SkippableComposition(new BinaryPacking(), new VariableByte());
 //    return new Simple16();
   }
 

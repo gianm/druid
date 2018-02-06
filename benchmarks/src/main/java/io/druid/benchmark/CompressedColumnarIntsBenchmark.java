@@ -60,11 +60,14 @@ public class CompressedColumnarIntsBenchmark
   private IndexedInts compressed;
   private IndexedInts fastPfor;
 
-  @Param({"4"})
-  int bytes;
+  @Param({"15"})
+  int bits;
+
+  @Param({"3000000"})
+  int rows;
 
   // Number of rows to read, the test will read random rows
-  @Param({"1000000"})
+  @Param({"300000", "2850000", "3000000"})
   int filteredRowCount;
 
   private BitSet filter;
@@ -73,8 +76,8 @@ public class CompressedColumnarIntsBenchmark
   public void setup() throws IOException
   {
     Random rand = new Random(0);
-    int[] vals = new int[0x100000];
-    final int bound = 1 << bytes;
+    int[] vals = new int[rows];
+    final int bound = 1 << bits;
     for (int i = 0; i < vals.length; ++i) {
       vals[i] = rand.nextInt(bound);
     }
@@ -82,20 +85,20 @@ public class CompressedColumnarIntsBenchmark
         CompressedVSizeColumnarIntsSupplier.fromList(
             IntArrayList.wrap(vals),
             bound - 1,
-            CompressedVSizeColumnarIntsSupplier.maxIntsInBufferForBytes(bytes),
+            CompressedVSizeColumnarIntsSupplier.maxIntsInBufferForValue(bound),
             ByteOrder.nativeOrder(),
             CompressionStrategy.LZ4,
             Closer.create()
         )
     );
-    System.out.println("compressed = " + bufferCompressed.remaining());
+    System.out.println("compressed size = " + bufferCompressed.remaining());
     this.compressed = CompressedVSizeColumnarIntsSupplier.fromByteBuffer(
         bufferCompressed,
         ByteOrder.nativeOrder()
     ).get();
 
     final ByteBuffer bufferUncompressed = serialize(VSizeColumnarInts.fromArray(vals));
-    System.out.println("uncompressed = " + bufferUncompressed.remaining());
+    System.out.println("uncompressed size = " + bufferUncompressed.remaining());
     this.uncompressed = VSizeColumnarInts.readFromByteBuffer(bufferUncompressed);
 
     final SegmentWriteOutMedium segmentWriteOutMedium = new OnHeapMemorySegmentWriteOutMedium();
@@ -105,18 +108,23 @@ public class CompressedColumnarIntsBenchmark
       fastPforSerializer.add(val);
     }
     final ByteArrayOutputStream baos = new ByteArrayOutputStream();
-    System.out.println("fastPfor = " + fastPforSerializer.getSerializedSize());
     fastPforSerializer.writeTo(Channels.newChannel(baos), null);
-    this.fastPfor = FastPforIntsSupplier.fromByteBuffer(ByteBuffer.wrap(baos.toByteArray())).get();
+    final byte[] fastPforBytes = baos.toByteArray();
+    System.out.println("fastPfor size = " + fastPforBytes.length);
+    this.fastPfor = FastPforIntsSupplier.fromByteBuffer(ByteBuffer.wrap(fastPforBytes)).get();
 
-    filter = new BitSet();
-    for (int i = 0; i < filteredRowCount; i++) {
-      int rowToAccess = rand.nextInt(vals.length);
-      // Skip already selected rows if any
-      while (filter.get(rowToAccess)) {
-        rowToAccess = (rowToAccess + 1) % vals.length;
+    if (filteredRowCount < rows) {
+      filter = new BitSet();
+      for (int i = 0; i < filteredRowCount; i++) {
+        int rowToAccess = rand.nextInt(vals.length);
+        // Skip already selected rows if any
+        while (filter.get(rowToAccess)) {
+          rowToAccess = (rowToAccess + 1) % vals.length;
+        }
+        filter.set(rowToAccess);
       }
-      filter.set(rowToAccess);
+    } else {
+      filter = null;
     }
 
   }
@@ -157,8 +165,14 @@ public class CompressedColumnarIntsBenchmark
   @OutputTimeUnit(TimeUnit.MICROSECONDS)
   public void uncompressed(Blackhole blackhole)
   {
-    for (int i = 0; i < 0x100000; i ++) {
-      blackhole.consume(uncompressed.get(i));
+    if (filter == null) {
+      for (int i = 0; i < rows; i++) {
+        blackhole.consume(uncompressed.get(i));
+      }
+    } else {
+      for (int i = filter.nextSetBit(0); i >= 0; i = filter.nextSetBit(i + 1)) {
+        blackhole.consume(uncompressed.get(i));
+      }
     }
   }
 
@@ -167,8 +181,14 @@ public class CompressedColumnarIntsBenchmark
   @OutputTimeUnit(TimeUnit.MICROSECONDS)
   public void compressed(Blackhole blackhole)
   {
-    for (int i = 0; i < 0x100000; i ++) {
-      blackhole.consume(compressed.get(i));
+    if (filter == null) {
+      for (int i = 0; i < rows; i++) {
+        blackhole.consume(compressed.get(i));
+      }
+    } else {
+      for (int i = filter.nextSetBit(0); i >= 0; i = filter.nextSetBit(i + 1)) {
+        blackhole.consume(compressed.get(i));
+      }
     }
   }
 
@@ -177,8 +197,14 @@ public class CompressedColumnarIntsBenchmark
   @OutputTimeUnit(TimeUnit.MICROSECONDS)
   public void fastPfor(Blackhole blackhole)
   {
-    for (int i = 0; i < 0x100000; i ++) {
-      blackhole.consume(fastPfor.get(i));
+    if (filter == null) {
+      for (int i = 0; i < rows; i++) {
+        blackhole.consume(fastPfor.get(i));
+      }
+    } else {
+      for (int i = filter.nextSetBit(0); i >= 0; i = filter.nextSetBit(i + 1)) {
+        blackhole.consume(fastPfor.get(i));
+      }
     }
   }
 }
