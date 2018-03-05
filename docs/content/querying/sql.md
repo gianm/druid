@@ -210,22 +210,6 @@ over the connection time zone.
 |`NULLIF(value1, value2)`|Returns NULL if value1 and value2 match, else returns value1.|
 |`COALESCE(value1, value2, ...)`|Returns the first value that is neither NULL nor empty string.|
 
-### Unsupported features
-
-Druid does not support all SQL features, including:
-
-- OVER clauses, and analytic functions such as `LAG` and `LEAD`.
-- JOIN clauses, other than semi-joins as described above.
-- OFFSET clauses.
-- DDL and DML.
-
-Additionally, some Druid features are not supported by the SQL language. Some unsupported Druid features include:
-
-- [Multi-value dimensions](multi-value-dimensions.html).
-- [DataSketches aggregators](../development/extensions-core/datasketches-extension.html).
-- [Spatial filters](../development/geo.html).
-- [Query cancellation](querying.html#query-cancellation).
-
 ## Data types and casts
 
 Druid natively supports five basic column types: "long" (64 bit signed int), "float" (32 bit float), "double" (64 bit
@@ -502,3 +486,19 @@ The Druid SQL server is configured through the following properties on the broke
 |`druid.sql.planner.useApproximateCountDistinct`|Whether to use an approximate cardinalty algorithm for `COUNT(DISTINCT foo)`.|true|
 |`druid.sql.planner.useApproximateTopN`|Whether to use approximate [TopN queries](../querying/topnquery.html) when a SQL query could be expressed as such. If false, exact [GroupBy queries](../querying/groupbyquery.html) will be used instead.|true|
 |`druid.sql.planner.useFallback`|Whether to evaluate operations on the broker when they cannot be expressed as Druid queries. This option is not recommended for production since it can generate unscalable query plans. If false, SQL queries that cannot be translated to Druid queries will fail.|false|
+
+## Unsupported features
+
+Druid SQL does not support all features of Druid's [native query language](native.html), including:
+
+- [Multi-value dimensions](multi-value-dimensions.html).
+- [DataSketches aggregators](../development/extensions-core/datasketches-extension.html).
+- [Spatial filters](../development/geo.html).
+- [Query cancellation](querying.html#query-cancellation).
+
+Additionally, some SQL features are not supported, including:
+
+- OVER clauses, and analytic functions such as `LAG` and `LEAD`.
+- JOIN clauses, other than [semi-joins](#query-execution) as described above.
+- OFFSET clauses.
+- DDL and DML (use Druid's [ingestion APIs](../ingestion/index.html) instead).

@@ -99,7 +99,7 @@
   {"source": "development/libraries.html", "target": "/libraries.html"},
   {"source": "development/kafka-simple-consumer-firehose.html", "target": "extensions-contrib/kafka-simple.html"},
   {"source": "development/select-query.html", "target": "../querying/select-query.html"},
-  {"source": "index.html", "target": "design/index.html"},
+  {"source": "index.html", "target": "design/start.html"},
   {"source": "ingestion/overview.html", "target": "ingestion.html"},
   {"source": "ingestion/realtime-ingestion.html", "target": "stream-ingestion.html"},
   {"source": "misc/cluster-setup.html", "target": "../tutorials/cluster.html"},
@@ -115,5 +115,6 @@
   {"source": "tutorials/tutorial-loading-batch-data.html", "target": "tutorial-batch.html"},
   {"source": "tutorials/tutorial-loading-streaming-data.html", "target": "tutorial-streams.html"},
   {"source": "tutorials/tutorial-the-druid-cluster.html", "target": "cluster.html"},
-  {"source": "development/extensions-core/caffeine-cache.html", "target":"../../configuration/caching.html"}
+  {"source": "development/extensions-core/caffeine-cache.html", "target":"../../configuration/caching.html"},
+  {"source": "ingestion/", "target":}
 ]
