@@ -24,15 +24,16 @@ layout: toc
 
 ## Ingestion
   * [Overview](/docs/VERSION/ingest/index.html)
-    * [Ingestion methods](/docs/VERSION/ingest/index.html#methods)
+    * [Ingestion methods](/docs/VERSION/ingest/index.html#ingestion-methods)
     * [Partitioning](/docs/VERSION/ingest/index.html#partitioning)
     * [Rollup](/docs/VERSION/ingest/index.html#rollup)
-    * [Inserts, overwrites, and deletes](/docs/VERSION/ingest/index.html#iod)
-  * [Overview](/docs/VERSION/ingest/specs.html)
-    * [Ingestion methods](/docs/VERSION/ingest/specs.html#methods)
-    * [Partitioning](/docs/VERSION/ingest/index.html#partitioning)
-    * [Rollup](/docs/VERSION/ingest/index.html#rollup)
-    * [Inserts, overwrites, and deletes](/docs/VERSION/ingest/index.html#iod)
+    * [Inserts, overwrites, and deletes](/docs/VERSION/ingest/index.html#inserts-overwrites-and-deletes)
+    * [Performance tips](/docs/VERSION/ingest/index.html#performance-tips)
+  * [Ingestion specs](/docs/VERSION/ingest/specs.html)
+    * [Parser](/docs/VERSION/ingest/specs.html#parser)
+    * [Dimensions](/docs/VERSION/ingest/specs.html#dimensions)
+    * [Metrics](/docs/VERSION/ingest/specs.html#metrics)
+    * [Granularity](/docs/VERSION/ingest/specs.html#granularity)
   * Ingestion methods
     * [Hadoop](/docs/VERSION/ingest/hadoop.html)
     * [Native batch](/docs/VERSION/ingest/native-batch.html)
@@ -44,6 +45,7 @@ layout: toc
     * [Reindexing](/docs/VERSION/ingest/manage.html#reindex)
     * [Compaction](/docs/VERSION/ingest/manage.html#compact)
     * [Dropping data](/docs/VERSION/ingest/manage.html#drop)
+  * [Ingestion FAQ](/docs/VERSION/ingest/faq.html)
 
 ## Getting Started
   * [Concepts](/docs/VERSION/design/)
@@ -141,7 +143,7 @@ layout: toc
   * [Realtime](/docs/VERSION/configuration/realtime.html)
   * [Configuring Logging](/docs/VERSION/configuration/logging.html)
   * [Configuring Authentication and Authorization](/docs/VERSION/configuration/auth.html)
-  
+
 ## Development
   * [Overview](/docs/VERSION/development/overview.html)
   * [Libraries](/docs/VERSION/development/libraries.html)

@@ -2,16 +2,15 @@
 layout: doc_page
 ---
 
-# Data ingestion: overview
+# Ingestion
 
-<a name="methods" />
 ## Ingestion methods
 
-Druid supports a variety of data ingestion methods, also called _indexing_ methods. In general, with any method, Druid
-will load data from some external location, convert it into Druid's columnar format, and then store it in immutable
-_segments_ in your [deep storage](../dependencies/deep-storage.html). In most ingestion methods, this work is done by
-Druid MiddleManager nodes. One exception is Hadoop-based ingestion, where this work is instead done using a Hadoop
-MapReduce job on YARN (although MiddleManager nodes are still involved in starting and monitoring the Hadoop jobs).
+Druid supports a variety of data ingestion methods, also called indexing methods. In general, with any method, Druid
+will load data from some external location and then store it as immutable [segments](../design/segments.html) in
+your [deep storage](../dependencies/deep-storage.html). In most ingestion methods, this work is done by Druid
+MiddleManager nodes. One exception is Hadoop-based ingestion, where this work is instead done using a Hadoop MapReduce
+job on YARN (although MiddleManager nodes are still involved in starting and monitoring the Hadoop jobs).
 
 Once segments have been generated and stored in deep storage, they will be loaded by Druid Historical nodes. Some Druid
 ingestion methods additionally support _real-time queries_, meaning you can query in-flight data on MiddleManager nodes
@@ -32,7 +31,22 @@ the best one for your situation.
 
 ## Partitioning
 
-Druid [datasources](../design/index.html) are partitioned into immutable _segments_. Each segment
+Druid is a distributed data store, and it partitions your data in order to process it in parallel. Druid
+[datasources](../design/index.html) are always partitioned first by time based on the
+[segmentGranularity](specs.html#granularity) parameter of your ingestion spec. Each of these time partitions is called
+a _time chunk_, and each time chunk contains one or more [segments](../design/segments.html). The segments within a
+particular time chunk may be partitioned further using options that vary based on the ingestion method you have chosen.
+
+ * With [Hadoop](hadoop.html) you can do hash- or range-based partitioning on one or more columns.
+ * With [Native batch](native-batch.html) you can partition on a hash of all dimension columns. This is useful when
+ rollup is enabled, since it maximizes your space savings.
+ * With [Kafka indexing](../development/extensions-core/kafka-ingestion.html), partitioning is based on Kafka
+ partitions, and is not configurable through Druid. You can configure it on the Kafka side by using the partitioning
+ functionality of the Kafka producer.
+ * With [Tranquility](stream-push.html), partitioning is done by default on a hash of all dimension columns in order
+ to maximize rollup. You can also provide a custom Partitioner class; see the
+ [Tranquility documentation(https://github.com/druid-io/tranquility/blob/master/docs/overview.md#partitioning-and-replication)
+ for details.
 
 All Druid datasources are partitioned by time. Each data ingestion method must acquire a write lock on a particular
 time range when loading data, so no two methods can operate on the same time range of the same datasource at the same
@@ -43,6 +57,7 @@ real-time load will take priority.)
 
 ## Rollup
 
-<a name="iod" />
+
+
 ## Inserts, overwrites, and deletes
 
