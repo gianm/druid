@@ -14,6 +14,7 @@ layout: toc
 
 ## Setup
   * [Building a cluster](/docs/VERSION/setup/cluster.html)
+    * [Running services](/docs/VERSION/setup/cluster.html#hardware)
     * [Suggested hardware](/docs/VERSION/setup/cluster.html#hardware)
     * [Server types](/docs/VERSION/setup/cluster.html#servertypes)
     * [High availability](/docs/VERSION/setup/cluster.html#ha)

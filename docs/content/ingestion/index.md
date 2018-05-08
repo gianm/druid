@@ -7,8 +7,12 @@ layout: doc_page
 ## Ingestion methods
 
 Druid supports a variety of data ingestion methods, also called indexing methods. In general, with any method, Druid
-will load data from some external location and then store it as immutable [segments](../design/segments.html) in
-your [deep storage](../dependencies/deep-storage.html). In most ingestion methods, this work is done by Druid
+MiddleManagers are responsible for loading data from some external location and then create immutable
+[segments](../design/segments.html) in your [deep storage](../dependencies/deep-storage.html). These segments may be
+created on the MiddleManager servers themselves, or, in the case of Hadoop-based ingestion, will be created by
+Hadoop MapReduce jobs running on YARN.
+
+In most ingestion methods, this work is done by Druid
 MiddleManager nodes. One exception is Hadoop-based ingestion, where this work is instead done using a Hadoop MapReduce
 job on YARN (although MiddleManager nodes are still involved in starting and monitoring the Hadoop jobs).
 
