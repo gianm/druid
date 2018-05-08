@@ -17,31 +17,27 @@
  * under the License.
  */
 
-package io.druid.segment.realtime.appenderator;
+package io.druid.indexing.common;
 
-import io.druid.segment.writeout.SegmentWriteOutMediumFactory;
-import io.druid.segment.IndexSpec;
-import org.joda.time.Period;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import io.druid.indexing.common.task.Task;
+import io.druid.query.DruidMetrics;
+import io.druid.segment.realtime.FireDepartment;
+import io.druid.segment.realtime.RealtimeMetricsMonitor;
 
-import javax.annotation.Nullable;
-import java.io.File;
-
-public interface AppenderatorConfig
+public class TaskRealtimeMetricsMonitorBuilder
 {
-  boolean isReportParseExceptions();
+  private TaskRealtimeMetricsMonitorBuilder() {}
 
-  int getMaxRowsInMemory();
-
-  long getMaxBytesInMemory();
-
-  int getMaxPendingPersists();
-
-  Period getIntermediatePersistPeriod();
-
-  IndexSpec getIndexSpec();
-
-  File getBasePersistDirectory();
-
-  @Nullable
-  SegmentWriteOutMediumFactory getSegmentWriteOutMediumFactory();
+  public static RealtimeMetricsMonitor build(Task task, FireDepartment fireDepartment)
+  {
+    return new RealtimeMetricsMonitor(
+        ImmutableList.of(fireDepartment),
+        ImmutableMap.of(
+            DruidMetrics.TASK_ID, new String[]{task.getId()},
+            DruidMetrics.TASK_TYPE, new String[]{task.getType()}
+        )
+    );
+  }
 }

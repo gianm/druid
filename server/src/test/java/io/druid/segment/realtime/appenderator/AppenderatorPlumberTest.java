@@ -68,6 +68,7 @@ public class AppenderatorPlumberTest
         null,
         null,
         null,
+        null,
         new IntervalStartVersioningPolicy(),
         new NoopRejectionPolicyFactory(),
         null,
@@ -77,6 +78,7 @@ public class AppenderatorPlumberTest
         0,
         0,
         false,
+        null,
         null,
         null,
         null
@@ -110,17 +112,17 @@ public class AppenderatorPlumberTest
     commitMetadata.put("x", "1");
     Assert.assertEquals(
         1,
-        plumber.add(rows[0], null));        
+        plumber.add(rows[0], null).getRowCount());
 
     commitMetadata.put("x", "2");
     Assert.assertEquals(
         2,
-        plumber.add(rows[1], null));        
+        plumber.add(rows[1], null).getRowCount());
 
     commitMetadata.put("x", "3");
     Assert.assertEquals(
         3,
-        plumber.add(rows[2], null));
+        plumber.add(rows[2], null).getRowCount());
 
     
     Assert.assertEquals(1, plumber.getSegmentsView().size());

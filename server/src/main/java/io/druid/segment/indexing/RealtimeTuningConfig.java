@@ -42,7 +42,7 @@ import java.io.File;
  */
 public class RealtimeTuningConfig implements TuningConfig, AppenderatorConfig
 {
-  private static final int defaultMaxRowsInMemory = 75000;
+  private static final int defaultMaxRowsInMemory = TuningConfig.DEFAULT_MAX_ROWS_IN_MEMORY;
   private static final Period defaultIntermediatePersistPeriod = new Period("PT10M");
   private static final Period defaultWindowPeriod = new Period("PT10M");
   private static final VersioningPolicy defaultVersioningPolicy = new IntervalStartVersioningPolicy();
@@ -53,6 +53,7 @@ public class RealtimeTuningConfig implements TuningConfig, AppenderatorConfig
   private static final Boolean defaultReportParseExceptions = Boolean.FALSE;
   private static final long defaultHandoffConditionTimeout = 0;
   private static final long defaultAlertTimeout = 0;
+  private static final String defaultDedupColumn = null;
 
   private static File createNewBasePersistDirectory()
   {
@@ -72,6 +73,7 @@ public class RealtimeTuningConfig implements TuningConfig, AppenderatorConfig
   {
     return new RealtimeTuningConfig(
         defaultMaxRowsInMemory,
+        0L,
         defaultIntermediatePersistPeriod,
         defaultWindowPeriod,
         basePersistDirectory == null ? createNewBasePersistDirectory() : basePersistDirectory,
@@ -86,11 +88,13 @@ public class RealtimeTuningConfig implements TuningConfig, AppenderatorConfig
         defaultReportParseExceptions,
         defaultHandoffConditionTimeout,
         defaultAlertTimeout,
-        null
+        null,
+        defaultDedupColumn
     );
   }
 
   private final int maxRowsInMemory;
+  private final long maxBytesInMemory;
   private final Period intermediatePersistPeriod;
   private final Period windowPeriod;
   private final File basePersistDirectory;
@@ -106,10 +110,13 @@ public class RealtimeTuningConfig implements TuningConfig, AppenderatorConfig
   private final long alertTimeout;
   @Nullable
   private final SegmentWriteOutMediumFactory segmentWriteOutMediumFactory;
+  @Nullable
+  private final String dedupColumn;
 
   @JsonCreator
   public RealtimeTuningConfig(
       @JsonProperty("maxRowsInMemory") Integer maxRowsInMemory,
+      @JsonProperty("maxBytesInMemory") Long maxBytesInMemory,
       @JsonProperty("intermediatePersistPeriod") Period intermediatePersistPeriod,
       @JsonProperty("windowPeriod") Period windowPeriod,
       @JsonProperty("basePersistDirectory") File basePersistDirectory,
@@ -125,10 +132,14 @@ public class RealtimeTuningConfig implements TuningConfig, AppenderatorConfig
       @JsonProperty("reportParseExceptions") Boolean reportParseExceptions,
       @JsonProperty("handoffConditionTimeout") Long handoffConditionTimeout,
       @JsonProperty("alertTimeout") Long alertTimeout,
-      @JsonProperty("segmentWriteOutMediumFactory") @Nullable SegmentWriteOutMediumFactory segmentWriteOutMediumFactory
+      @JsonProperty("segmentWriteOutMediumFactory") @Nullable SegmentWriteOutMediumFactory segmentWriteOutMediumFactory,
+      @JsonProperty("dedupColumn") @Nullable String dedupColumn
   )
   {
     this.maxRowsInMemory = maxRowsInMemory == null ? defaultMaxRowsInMemory : maxRowsInMemory;
+    // initializing this to 0, it will be lazily initialized to a value
+    // @see server.src.main.java.io.druid.segment.indexing.TuningConfigs#getMaxBytesInMemoryOrDefault(long)
+    this.maxBytesInMemory = maxBytesInMemory == null ? 0 : maxBytesInMemory;
     this.intermediatePersistPeriod = intermediatePersistPeriod == null
                                      ? defaultIntermediatePersistPeriod
                                      : intermediatePersistPeriod;
@@ -154,6 +165,7 @@ public class RealtimeTuningConfig implements TuningConfig, AppenderatorConfig
     this.alertTimeout = alertTimeout == null ? defaultAlertTimeout : alertTimeout;
     Preconditions.checkArgument(this.alertTimeout >= 0, "alertTimeout must be >= 0");
     this.segmentWriteOutMediumFactory = segmentWriteOutMediumFactory;
+    this.dedupColumn = dedupColumn == null ? defaultDedupColumn : dedupColumn;
   }
 
   @Override
@@ -161,6 +173,12 @@ public class RealtimeTuningConfig implements TuningConfig, AppenderatorConfig
   public int getMaxRowsInMemory()
   {
     return maxRowsInMemory;
+  }
+
+  @Override
+  public long getMaxBytesInMemory()
+  {
+    return maxBytesInMemory;
   }
 
   @Override
@@ -264,10 +282,18 @@ public class RealtimeTuningConfig implements TuningConfig, AppenderatorConfig
     return segmentWriteOutMediumFactory;
   }
 
+  @JsonProperty
+  @Nullable
+  public String getDedupColumn()
+  {
+    return dedupColumn;
+  }
+
   public RealtimeTuningConfig withVersioningPolicy(VersioningPolicy policy)
   {
     return new RealtimeTuningConfig(
         maxRowsInMemory,
+        maxBytesInMemory,
         intermediatePersistPeriod,
         windowPeriod,
         basePersistDirectory,
@@ -282,7 +308,8 @@ public class RealtimeTuningConfig implements TuningConfig, AppenderatorConfig
         reportParseExceptions,
         handoffConditionTimeout,
         alertTimeout,
-        segmentWriteOutMediumFactory
+        segmentWriteOutMediumFactory,
+        dedupColumn
     );
   }
 
@@ -290,6 +317,7 @@ public class RealtimeTuningConfig implements TuningConfig, AppenderatorConfig
   {
     return new RealtimeTuningConfig(
         maxRowsInMemory,
+        maxBytesInMemory,
         intermediatePersistPeriod,
         windowPeriod,
         dir,
@@ -304,7 +332,8 @@ public class RealtimeTuningConfig implements TuningConfig, AppenderatorConfig
         reportParseExceptions,
         handoffConditionTimeout,
         alertTimeout,
-        segmentWriteOutMediumFactory
+        segmentWriteOutMediumFactory,
+        dedupColumn
     );
   }
 }
