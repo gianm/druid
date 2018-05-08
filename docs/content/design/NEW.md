@@ -5,11 +5,20 @@ layout: doc_page
 What is Druid?
 ==============
 
-Druid is an open source data store designed for real-time slice-and-dice analytics ("OLAP"-style) on large data sets.
-Druid's key features are a column-oriented storage layout, a distributed shared-nothing architecture, and ability to
-generate and leverage indexing and caching structures. Druid is typically deployed in clusters of tens to hundreds of
-nodes, and has the ability to load data from Apache Kafka and Apache Hadoop, among other data sources. Druid offers two
-query languages: a [SQL dialect](../querying/sql.html) and a [JSON-over-HTTP API](../querying/native.html).
+Druid is designed for real-time slice-and-dice analytics ("OLAP"-style) on large data sets. Druid's key features are a
+column-oriented storage layout, a distributed shared-nothing architecture, and ability to generate and leverage indexing
+and caching structures. Druid is typically deployed in clusters of tens to hundreds of nodes, and has the ability to
+load data from Apache Kafka and Apache Hadoop, among other data sources. Druid offers two query languages: a [SQL
+dialect](../querying/sql.html) and a [JSON-over-HTTP API](../querying/native.html).
+
+Druid is a high-performance, column-oriented, distributed data store. What we mean by this is:
+
+- "high performance": Druid aims to provide low query latency and high ingest rates.
+- "column-oriented": Druid stores data in a column-oriented format, like other systems designed for
+  high-performance analytics. It can also store indexes along with the columns.
+- "distributed": Druid is deployed in clusters, typically of tens to hundreds of nodes.
+- "data store": Druid loads your data and stores a copy of it on the cluster's local disks (and may cache it
+  in memory). It doesn't query your data directly from some other storage system.
 
 Druid was originally developed to power a slice-and-dice analytical UI built on top of large event streams. The original
 use case for Druid targeted ingest rates of millions of records/sec, retention of over a year of data, and query
@@ -21,12 +30,11 @@ queries.
 Druid would typically be used in lieu of more general purpose query systems like Hadoop MapReduce or Spark when query
 latency is of the utmost importance. Druid is often used as a data store for powering GUI analytical applications.
 
-The buzzwordy description of Druid is a high-performance, column-oriented, distributed data store. What we mean by this
-is:
+Druid is a high-performance, column-oriented, distributed data store. What we mean by this is:
 
 - "high performance": Druid aims to provide low query latency and high ingest rates.
-- "column-oriented": Druid stores data in a column-oriented format, like most other systems designed for
-  analytics. It can also store indexes along with the columns.
+- "column-oriented": Druid stores data in a column-oriented format, like other systems designed for
+  high-performance analytics. It can also store indexes along with the columns.
 - "distributed": Druid is deployed in clusters, typically of tens to hundreds of nodes.
 - "data store": Druid loads your data and stores a copy of it on the cluster's local disks (and may cache it
   in memory). It doesn't query your data from some other storage system.
