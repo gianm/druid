@@ -77,6 +77,10 @@ query.
 Add "EXPLAIN PLAN FOR" to the beginning of any query to see how it would be run as a native Druid query. In this case,
 the query will not actually be executed.
 
+## Optimizing queries
+
+TODO(gianm)
+
 ## Functions and operators
 
 ### Aggregation functions

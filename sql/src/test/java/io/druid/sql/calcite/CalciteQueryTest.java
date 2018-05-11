@@ -6316,6 +6316,57 @@ public class CalciteQueryTest extends CalciteTestBase
   }
 
   @Test
+  public void testOuterAggregationOnInnerHyperUnique() throws Exception
+  {
+    testQuery(
+        "SELECT MIN(d)\n"
+        + "FROM (SELECT FLOOR(__time TO HOUR), COUNT(DISTINCT dim1) FROM foo GROUP BY 1)\n",
+        ImmutableList.of(
+            GroupByQuery.builder()
+                        .setDataSource(CalciteTests.DATASOURCE1)
+                        .setInterval(QSS(Filtration.eternity()))
+                        .setGranularity(Granularities.ALL)
+                        .setVirtualColumns(
+                            EXPRESSION_VIRTUAL_COLUMN(
+                                "d1:v",
+                                "timestamp_floor(\"__time\",'P1M','','UTC')",
+                                ValueType.LONG
+                            )
+                        )
+                        .setDimensions(
+                            DIMS(
+                                new DefaultDimensionSpec("dim2", "d0"),
+                                new DefaultDimensionSpec("d1:v", "d1", ValueType.LONG)
+                            )
+                        )
+                        .setAggregatorSpecs(AGGS(new LongSumAggregatorFactory("a0", "cnt")))
+                        .setLimitSpec(
+                            new DefaultLimitSpec(
+                                ImmutableList.of(
+                                    new OrderByColumnSpec("d0", OrderByColumnSpec.Direction.ASCENDING),
+                                    new OrderByColumnSpec(
+                                        "d1",
+                                        OrderByColumnSpec.Direction.ASCENDING,
+                                        StringComparators.NUMERIC
+                                    )
+                                ),
+                                Integer.MAX_VALUE
+                            )
+                        )
+                        .setContext(QUERY_CONTEXT_DEFAULT)
+                        .build()
+        ),
+        ImmutableList.of(
+            new Object[]{"", T("2000-01-01"), 2L},
+            new Object[]{"", T("2001-01-01"), 1L},
+            new Object[]{"a", T("2000-01-01"), 1L},
+            new Object[]{"a", T("2001-01-01"), 1L},
+            new Object[]{"abc", T("2001-01-01"), 1L}
+        )
+    );
+  }
+
+  @Test
   public void testUsingSubqueryAsPartOfOrFilter() throws Exception
   {
     // This query should ideally be plannable without fallback, but it's not. The "OR" means it isn't really

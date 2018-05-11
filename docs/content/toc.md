@@ -2,26 +2,24 @@
 layout: toc
 ---
 
-## [Getting started](/docs/VERSION/index.html)
-  * [What is Druid?](/docs/VERSION/index.html#what-is-druid)
-  * [Key features](/docs/VERSION/index.html#key-features)
-  * [](/docs/VERSION/index.html#tutorials)
-
-## [Design](/docs/VERSION/design/index.html)
-  * [Key concepts](/docs/VERSION/design/index.html#key-concepts)
-  * [How Druid stores data](/docs/VERSION/design/index.html#how-druid-stores-data)
-  * [How Druid queries data](/docs/VERSION/design/index.html#how-druid-queries-data)
+## Getting started
+  * [Design](/docs/VERSION/design/index.html)
+    * [What is Druid?](/docs/VERSION/design/index.html#what-is-druid)
+    * [Architecture](/docs/VERSION/design/index.html#architecture)
+    * [Query processing](/docs/VERSION/design/index.html#query-processing)
+  * [Tutorial: Loading from Kafka](/docs/VERSION/tutorials/index.html)
+  * [Tutorial: Loading from Hadoop](/docs/VERSION/tutorials/index.html)
+  * [Tutorial: Loading from flat files](/docs/VERSION/tutorials/index.html)
 
 ## Setup
   * [Building a cluster](/docs/VERSION/setup/cluster.html)
-    * [Running services](/docs/VERSION/setup/cluster.html#hardware)
-    * [Suggested hardware](/docs/VERSION/setup/cluster.html#hardware)
-    * [Server types](/docs/VERSION/setup/cluster.html#servertypes)
+    * [Choosing hardware](/docs/VERSION/setup/cluster.html#hardware)
+    * [Starting processes](/docs/VERSION/setup/cluster.html#services)
     * [High availability](/docs/VERSION/setup/cluster.html#ha)
     * [Backup](/docs/VERSION/setup/cluster.html#backup)
-  * [Metadata store](/docs/VERSION/setup/metadata-store.html)
-  * [Deep storage](/docs/VERSION/setup/deep-storage.html)
-  * [Extensions](/docs/VERSION/setup/extensions.html)
+    * [Metadata store](/docs/VERSION/setup/metadata-store.html)
+    * [Deep storage](/docs/VERSION/setup/deep-storage.html)
+  * [Configuration reference](/docs/VERSION/setup/configuration.html)
 
 ## Ingestion
   * [Overview](/docs/VERSION/ingest/index.html)
@@ -71,7 +69,15 @@ layout: toc
   * [FAQ](/docs/VERSION/ingestion/faq.html)
 
 ## Querying
-  * [Native queries](/docs/VERSION/querying/querying.html)
+  * [SQL](/docs/VERSION/querying/sql.html)
+    * [Query syntax](/docs/VERSION/querying/sql.html#query-syntax)
+    * [Functions and operators](/docs/VERSION/querying/sql.html#functions-and-operators)
+    * [Data types and casts](/docs/VERSION/querying/sql.html#data-types-and-casts)
+    * [Query execution](/docs/VERSION/querying/sql.html#query-execution)
+    * [Client APIs](/docs/VERSION/querying/sql.html#client-apis)
+    * [System tables](/docs/VERSION/querying/sql.html#system-tables)
+    * [Unsupported features](/docs/VERSION/querying/sql.html#unsupported-features)
+  * [Native queries](/docs/VERSION/querying/native.html)
     * [Timeseries](/docs/VERSION/querying/timeseriesquery.html)
     * [TopN](/docs/VERSION/querying/topnquery.html)
     * [GroupBy](/docs/VERSION/querying/groupbyquery.html)
@@ -84,40 +90,17 @@ layout: toc
     * Components
       * [Datasources](/docs/VERSION/querying/datasource.html)
       * [Filters](/docs/VERSION/querying/filters.html)
-      * [Aggregations](/docs/VERSION/querying/aggregations.html)
-      * [Post Aggregations](/docs/VERSION/querying/post-aggregations.html)
       * [Granularities](/docs/VERSION/querying/granularities.html)
       * [DimensionSpecs](/docs/VERSION/querying/dimensionspecs.html)
-  * [SQL](/docs/VERSION/querying/sql.html)
-    * [Query syntax](/docs/VERSION/querying/sql.html#query-syntax)
-    * [Functions and operators](/docs/VERSION/querying/sql.html#functions-and-operators)
-    * [Data types and casts](/docs/VERSION/querying/sql.html#data-types-and-casts)
-    * [Query execution](/docs/VERSION/querying/sql.html#query-execution)
-    * [Client APIs](/docs/VERSION/querying/sql.html#client-apis)
-    * [System tables](/docs/VERSION/querying/sql.html#system-tables)
-    * [Unsupported features](/docs/VERSION/querying/sql.html#unsupported-features)
-  * [Context](/docs/VERSION/querying/query-context.html)
+      * [Aggregations](/docs/VERSION/querying/aggregations.html)
+      * [Post Aggregations](/docs/VERSION/querying/post-aggregations.html)
+      * [Sorting Orders](/docs/VERSION/querying/sorting-orders.html)
   * [Multi-value dimensions](/docs/VERSION/querying/multi-value-dimensions.html)
   * [Lookups](/docs/VERSION/querying/lookups.html)
   * [Joins](/docs/VERSION/querying/joins.html)
   * [Multitenancy](/docs/VERSION/querying/multitenancy.html)
   * [Caching](/docs/VERSION/querying/caching.html)
-  * [Sorting Orders](/docs/VERSION/querying/sorting-orders.html)
-
-## Design
-  * [Overview](/docs/VERSION/design/design.html)
-  * Storage
-    * [Segments](/docs/VERSION/design/segments.html)
-  * Node Types
-    * [Historical](/docs/VERSION/design/historical.html)
-    * [Broker](/docs/VERSION/design/broker.html)
-    * [Coordinator](/docs/VERSION/design/coordinator.html)
-    * [Indexing Service](/docs/VERSION/design/indexing-service.html)
-    * [Realtime](/docs/VERSION/design/realtime.html)
-  * Dependencies
-    * [Deep Storage](/docs/VERSION/dependencies/deep-storage.html)
-    * [Metadata Storage](/docs/VERSION/dependencies/metadata-storage.html)
-    * [ZooKeeper](/docs/VERSION/dependencies/zookeeper.html)
+  * [Query contexts](/docs/VERSION/querying/query-context.html)
 
 ## Operations
   * [Good Practices](/docs/VERSION/operations/recommendations.html)
@@ -135,16 +118,6 @@ layout: toc
   * [TLS Support](/docs/VERSION/operations/tls-support.html)
   * [Password Provider](/docs/VERSION/operations/password-provider.html)
 
-## Configuration
-  * [Common Configuration](/docs/VERSION/configuration/index.html)
-  * [Indexing Service](/docs/VERSION/configuration/indexing-service.html)
-  * [Coordinator](/docs/VERSION/configuration/coordinator.html)
-  * [Historical](/docs/VERSION/configuration/historical.html)
-  * [Broker](/docs/VERSION/configuration/broker.html)
-  * [Realtime](/docs/VERSION/configuration/realtime.html)
-  * [Configuring Logging](/docs/VERSION/configuration/logging.html)
-  * [Configuring Authentication and Authorization](/docs/VERSION/configuration/auth.html)
-
 ## Development
   * [Overview](/docs/VERSION/development/overview.html)
   * [Libraries](/docs/VERSION/development/libraries.html)
@@ -160,7 +133,6 @@ layout: toc
     * [Geographic Queries](/docs/VERSION/development/geo.html)
     * [Router](/docs/VERSION/development/router.html)
     * [Kafka Indexing Service](/docs/VERSION/development/extensions-core/kafka-ingestion.html)
-
 
 ## Misc
   * [Papers & Talks](/docs/VERSION/misc/papers-and-talks.html)
