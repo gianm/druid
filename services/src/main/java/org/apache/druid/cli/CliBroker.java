@@ -47,6 +47,10 @@ import org.apache.druid.java.util.common.logger.Logger;
 import org.apache.druid.query.QuerySegmentWalker;
 import org.apache.druid.query.RetryQueryRunnerConfig;
 import org.apache.druid.query.lookup.LookupModule;
+import org.apache.druid.segment.DefaultSegmentWrangler;
+import org.apache.druid.segment.SegmentWrangler;
+import org.apache.druid.segment.join.DefaultJoinableFactory;
+import org.apache.druid.segment.join.JoinableFactory;
 import org.apache.druid.server.BrokerQueryResource;
 import org.apache.druid.server.ClientInfoResource;
 import org.apache.druid.server.ClientQuerySegmentWalker;
@@ -62,8 +66,6 @@ import org.eclipse.jetty.server.Server;
 
 import java.util.List;
 
-/**
- */
 @Command(
     name = "broker",
     description = "Runs a broker node, see https://druid.apache.org/docs/latest/Broker.html for a description"
@@ -107,6 +109,8 @@ public class CliBroker extends ServerRunnable
           JsonConfigProvider.bind(binder, "druid.broker.segment", BrokerSegmentWatcherConfig.class);
 
           binder.bind(QuerySegmentWalker.class).to(ClientQuerySegmentWalker.class).in(LazySingleton.class);
+          binder.bind(JoinableFactory.class).to(DefaultJoinableFactory.class).in(LazySingleton.class);
+          binder.bind(SegmentWrangler.class).to(DefaultSegmentWrangler.class).in(LazySingleton.class);
 
           binder.bind(JettyServerInitializer.class).to(QueryJettyServerInitializer.class).in(LazySingleton.class);
 

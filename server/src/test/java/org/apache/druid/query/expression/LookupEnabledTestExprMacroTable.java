@@ -20,6 +20,7 @@
 package org.apache.druid.query.expression;
 
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import org.apache.druid.math.expr.ExprMacroTable;
@@ -29,6 +30,8 @@ import org.apache.druid.query.lookup.LookupExtractorFactory;
 import org.apache.druid.query.lookup.LookupExtractorFactoryContainer;
 import org.apache.druid.query.lookup.LookupExtractorFactoryContainerProvider;
 import org.apache.druid.query.lookup.LookupIntrospectHandler;
+import org.apache.druid.query.lookup.LookupReferencesManager;
+import org.apache.druid.query.lookup.LookupsState;
 import org.easymock.EasyMock;
 
 import javax.annotation.Nullable;
@@ -57,15 +60,14 @@ public class LookupEnabledTestExprMacroTable extends ExprMacroTable
   }
 
   /**
-   * Returns a mock {@link LookupExtractorFactoryContainerProvider} that has one lookup, "lookyloo".
+   * Returns a mock {@link LookupReferencesManager} that has one lookup, "lookyloo".
    */
-  public static LookupExtractorFactoryContainerProvider createTestLookupReferencesManager(
+  public static LookupReferencesManager createTestLookupReferencesManager(
       final ImmutableMap<String, String> theLookup
   )
   {
-    final LookupExtractorFactoryContainerProvider lookupExtractorFactoryContainerProvider =
-        EasyMock.createMock(LookupExtractorFactoryContainerProvider.class);
-    EasyMock.expect(lookupExtractorFactoryContainerProvider.get(EasyMock.eq("lookyloo"))).andReturn(
+    final LookupReferencesManager lookupReferencesManager = EasyMock.createMock(LookupReferencesManager.class);
+    EasyMock.expect(lookupReferencesManager.get(EasyMock.eq("lookyloo"))).andReturn(
         new LookupExtractorFactoryContainer(
             "v0",
             new LookupExtractorFactory()
@@ -102,8 +104,20 @@ public class LookupEnabledTestExprMacroTable extends ExprMacroTable
             }
         )
     ).anyTimes();
-    EasyMock.expect(lookupExtractorFactoryContainerProvider.get(EasyMock.not(EasyMock.eq("lookyloo")))).andReturn(null).anyTimes();
-    EasyMock.replay(lookupExtractorFactoryContainerProvider);
-    return lookupExtractorFactoryContainerProvider;
+    EasyMock.expect(lookupReferencesManager.get(EasyMock.not(EasyMock.eq("lookyloo")))).andReturn(null).anyTimes();
+    EasyMock.expect(lookupReferencesManager.getAllLookupsState())
+            .andReturn(
+                new LookupsState<>(
+                    ImmutableMap.of(
+                        "lookyloo",
+                        new LookupExtractorFactoryContainer("v0", EasyMock.mock(LookupExtractorFactory.class))
+                    ),
+                    ImmutableMap.of(),
+                    ImmutableSet.of()
+                )
+            )
+            .anyTimes();
+    EasyMock.replay(lookupReferencesManager);
+    return lookupReferencesManager;
   }
 }

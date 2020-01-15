@@ -41,6 +41,10 @@ import org.apache.druid.guice.ServerTypeConfig;
 import org.apache.druid.java.util.common.logger.Logger;
 import org.apache.druid.query.QuerySegmentWalker;
 import org.apache.druid.query.lookup.LookupModule;
+import org.apache.druid.segment.DefaultSegmentWrangler;
+import org.apache.druid.segment.SegmentWrangler;
+import org.apache.druid.segment.join.DefaultJoinableFactory;
+import org.apache.druid.segment.join.JoinableFactory;
 import org.apache.druid.server.QueryResource;
 import org.apache.druid.server.SegmentManager;
 import org.apache.druid.server.coordination.ServerManager;
@@ -57,6 +61,7 @@ import org.eclipse.jetty.server.Server;
 import java.util.List;
 
 /**
+ *
  */
 @Command(
     name = "historical",
@@ -90,6 +95,8 @@ public class CliHistorical extends ServerRunnable
           binder.bind(SegmentManager.class).in(LazySingleton.class);
           binder.bind(ZkCoordinator.class).in(ManageLifecycle.class);
           binder.bind(QuerySegmentWalker.class).to(ServerManager.class).in(LazySingleton.class);
+          binder.bind(JoinableFactory.class).to(DefaultJoinableFactory.class).in(LazySingleton.class);
+          binder.bind(SegmentWrangler.class).to(DefaultSegmentWrangler.class).in(LazySingleton.class);
 
           binder.bind(ServerTypeConfig.class).toInstance(new ServerTypeConfig(ServerType.HISTORICAL));
           binder.bind(JettyServerInitializer.class).to(QueryJettyServerInitializer.class).in(LazySingleton.class);

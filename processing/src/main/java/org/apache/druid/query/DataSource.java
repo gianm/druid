@@ -24,16 +24,46 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo;
 
 import java.util.List;
 
-@JsonTypeInfo(use = JsonTypeInfo.Id.NAME,
-              include = JsonTypeInfo.As.PROPERTY,
-              property = "type",
-              defaultImpl = LegacyDataSource.class)
+@JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "type", defaultImpl = LegacyDataSource.class)
 @JsonSubTypes({
-                  @JsonSubTypes.Type(value = TableDataSource.class, name = "table"),
-                  @JsonSubTypes.Type(value = QueryDataSource.class, name = "query"),
-                  @JsonSubTypes.Type(value = UnionDataSource.class, name = "union")
-              })
+    @JsonSubTypes.Type(value = TableDataSource.class, name = "table"),
+    @JsonSubTypes.Type(value = QueryDataSource.class, name = "query"),
+    @JsonSubTypes.Type(value = UnionDataSource.class, name = "union"),
+    @JsonSubTypes.Type(value = JoinDataSource.class, name = "join"),
+    @JsonSubTypes.Type(value = LookupDataSource.class, name = "lookup"),
+    @JsonSubTypes.Type(value = InlineDataSource.class, name = "inline")
+})
 public interface DataSource
 {
+  /**
+   * Returns the names of all table datasources involved in this query. Does not include names for non-tables, like
+   * lookups or inline datasources.
+   */
   List<String> getNames();
+
+  List<DataSource> getChildren();
+
+  DataSource withChildren(List<DataSource> children);
+
+  /**
+   * Returns true if queries on this dataSource are cacheable when run on data servers (e.g. historical, indexer).
+   * Currently, dataSources that modify the behavior of per-segment processing are not cacheable (notably: 'join').
+   *
+   * Note: Ideally, queries on 'join' datasources _would_ be cacheable, but we cannot currently do this due to lacking
+   * the code necessary to compute cache keys properly.
+   */
+  boolean isCacheable();
+
+  /**
+   * Returns true if all servers have a full copy of this datasource. True for things like inline, lookup, etc, or
+   * for queries of those.
+   */
+  boolean isGlobal();
+
+  /**
+   * Returns true if this datasource represents concrete data that can be scanned via a
+   * {@link org.apache.druid.segment.Segment} adapter of some kind. True for things like table, inline, lookup, but
+   * not for queries or joins.
+   */
+  boolean isConcrete();
 }

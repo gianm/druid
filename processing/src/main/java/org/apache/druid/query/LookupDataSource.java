@@ -21,51 +21,51 @@ package org.apache.druid.query;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import com.fasterxml.jackson.annotation.JsonTypeName;
-import com.google.common.collect.Iterables;
+import com.google.common.base.Preconditions;
 import org.apache.druid.java.util.common.IAE;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 
-@JsonTypeName("query")
-public class QueryDataSource implements DataSource
+public class LookupDataSource implements DataSource
 {
-  @JsonProperty
-  private final Query query;
+  private final String lookupName;
 
   @JsonCreator
-  public QueryDataSource(@JsonProperty("query") Query query)
+  public LookupDataSource(
+      @JsonProperty("lookup") String lookupName
+  )
   {
-    this.query = query;
+    this.lookupName = Preconditions.checkNotNull(lookupName, "lookup");
   }
 
   @Override
   public List<String> getNames()
   {
-    return query.getDataSource().getNames();
+    return Collections.emptyList();
   }
 
-  @JsonProperty
-  public Query getQuery()
+  @JsonProperty("lookup")
+  public String getLookupName()
   {
-    return query;
+    return lookupName;
   }
 
   @Override
   public List<DataSource> getChildren()
   {
-    return Collections.singletonList(query.getDataSource());
+    return Collections.emptyList();
   }
 
   @Override
   public DataSource withChildren(List<DataSource> children)
   {
-    if (children.size() != 1) {
-      throw new IAE("Must have exactly one child");
+    if (!children.isEmpty()) {
+      throw new IAE("Cannot accept children");
     }
 
-    return new QueryDataSource(query.withDataSource(Iterables.getOnlyElement(children)));
+    return this;
   }
 
   @Override
@@ -77,19 +77,13 @@ public class QueryDataSource implements DataSource
   @Override
   public boolean isGlobal()
   {
-    return query.getDataSource().isGlobal();
+    return true;
   }
 
   @Override
   public boolean isConcrete()
   {
-    return false;
-  }
-
-  @Override
-  public String toString()
-  {
-    return query.toString();
+    return true;
   }
 
   @Override
@@ -101,19 +95,21 @@ public class QueryDataSource implements DataSource
     if (o == null || getClass() != o.getClass()) {
       return false;
     }
-
-    QueryDataSource that = (QueryDataSource) o;
-
-    if (!query.equals(that.query)) {
-      return false;
-    }
-
-    return true;
+    LookupDataSource that = (LookupDataSource) o;
+    return Objects.equals(lookupName, that.lookupName);
   }
 
   @Override
   public int hashCode()
   {
-    return query.hashCode();
+    return Objects.hash(lookupName);
+  }
+
+  @Override
+  public String toString()
+  {
+    return "LookupDataSource{" +
+           "lookupName='" + lookupName + '\'' +
+           '}';
   }
 }

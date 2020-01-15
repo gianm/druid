@@ -23,7 +23,9 @@ package org.apache.druid.query;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
+import org.apache.druid.java.util.common.IAE;
 
 import java.util.List;
 import java.util.stream.Collectors;
@@ -50,6 +52,46 @@ public class UnionDataSource implements DataSource
   public List<TableDataSource> getDataSources()
   {
     return dataSources;
+  }
+
+  @Override
+  public List<DataSource> getChildren()
+  {
+    return ImmutableList.copyOf(dataSources);
+  }
+
+  @Override
+  public DataSource withChildren(List<DataSource> children)
+  {
+    if (children.size() != dataSources.size()) {
+      throw new IAE("Expected [%d] children, got [%d]", dataSources.size(), children.size());
+    }
+
+    if (!children.stream().allMatch(dataSource -> dataSource instanceof TableDataSource)) {
+      throw new IAE("All children must be tables");
+    }
+
+    return new UnionDataSource(
+        children.stream().map(dataSource -> (TableDataSource) dataSource).collect(Collectors.toList())
+    );
+  }
+
+  @Override
+  public boolean isCacheable()
+  {
+    return false;
+  }
+
+  @Override
+  public boolean isGlobal()
+  {
+    return dataSources.stream().allMatch(DataSource::isGlobal);
+  }
+
+  @Override
+  public boolean isConcrete()
+  {
+    return dataSources.stream().allMatch(DataSource::isConcrete);
   }
 
   @Override

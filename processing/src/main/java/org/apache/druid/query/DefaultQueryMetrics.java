@@ -31,6 +31,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 /**
  * DefaultQueryMetrics is unsafe for use from multiple threads. It fails with RuntimeException on access not from the
@@ -42,8 +43,16 @@ public class DefaultQueryMetrics<QueryType extends Query<?>> implements QueryMet
   protected final ServiceMetricEvent.Builder builder = new ServiceMetricEvent.Builder();
   protected final Map<String, Number> metrics = new HashMap<>();
 
-  /** Non final to give subclasses ability to reassign it. */
+  /**
+   * Non final to give subclasses ability to reassign it.
+   */
   protected Thread ownerThread = Thread.currentThread();
+
+  public static String getMetricName(DataSource dataSource)
+  {
+    final List<String> names = dataSource.getNames();
+    return names.size() == 1 ? names.get(0) : names.stream().sorted().collect(Collectors.toList()).toString();
+  }
 
   protected void checkModifiedFromOwnerThread()
   {
@@ -77,7 +86,7 @@ public class DefaultQueryMetrics<QueryType extends Query<?>> implements QueryMet
   @Override
   public void dataSource(QueryType query)
   {
-    setDimension(DruidMetrics.DATASOURCE, DataSourceUtil.getMetricName(query.getDataSource()));
+    setDimension(DruidMetrics.DATASOURCE, getMetricName(query.getDataSource()));
   }
 
   @Override

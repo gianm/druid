@@ -22,6 +22,7 @@ package org.apache.druid.query;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonTypeName;
+import org.apache.druid.java.util.common.IAE;
 
 import java.util.Collections;
 import java.util.List;
@@ -48,6 +49,40 @@ public class TableDataSource implements DataSource
   public List<String> getNames()
   {
     return Collections.singletonList(name);
+  }
+
+  @Override
+  public List<DataSource> getChildren()
+  {
+    return Collections.emptyList();
+  }
+
+  @Override
+  public DataSource withChildren(List<DataSource> children)
+  {
+    if (!children.isEmpty()) {
+      throw new IAE("Cannot accept children");
+    }
+
+    return this;
+  }
+
+  @Override
+  public boolean isCacheable()
+  {
+    return true;
+  }
+
+  @Override
+  public boolean isGlobal()
+  {
+    return false;
+  }
+
+  @Override
+  public boolean isConcrete()
+  {
+    return true;
   }
 
   @Override

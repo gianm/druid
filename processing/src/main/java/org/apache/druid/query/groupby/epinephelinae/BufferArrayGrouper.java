@@ -21,6 +21,7 @@ package org.apache.druid.query.groupby.epinephelinae;
 
 import com.google.common.base.Preconditions;
 import com.google.common.base.Supplier;
+import com.google.common.primitives.Ints;
 import org.apache.druid.java.util.common.IAE;
 import org.apache.druid.java.util.common.ISE;
 import org.apache.druid.java.util.common.parsers.CloseableIterator;
@@ -29,7 +30,6 @@ import org.apache.druid.query.aggregation.AggregatorFactory;
 import org.apache.druid.query.groupby.epinephelinae.column.GroupByColumnSelectorStrategy;
 
 import javax.annotation.Nullable;
-
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
@@ -71,19 +71,24 @@ public class BufferArrayGrouper implements VectorGrouper, IntGrouper
       AggregatorFactory[] aggregatorFactories
   )
   {
-    final int cardinalityWithMissingValue = cardinality + 1;
-    final int recordSize = Arrays.stream(aggregatorFactories)
-                                 .mapToInt(AggregatorFactory::getMaxIntermediateSizeWithNulls)
-                                 .sum();
+    final long cardinalityWithMissingValue = computeCardinalityWithMissingValue(cardinality);
+    final long recordSize = Arrays.stream(aggregatorFactories)
+                                  .mapToLong(AggregatorFactory::getMaxIntermediateSizeWithNulls)
+                                  .sum();
 
     return getUsedFlagBufferCapacity(cardinalityWithMissingValue) +  // total used flags size
-           (long) cardinalityWithMissingValue * recordSize;                 // total values size
+           cardinalityWithMissingValue * recordSize;                 // total values size
+  }
+
+  private static long computeCardinalityWithMissingValue(int cardinality)
+  {
+    return (long) cardinality + 1;
   }
 
   /**
    * Compute the number of bytes to store all used flag bits.
    */
-  private static int getUsedFlagBufferCapacity(int cardinalityWithMissingValue)
+  private static long getUsedFlagBufferCapacity(long cardinalityWithMissingValue)
   {
     return (cardinalityWithMissingValue + Byte.SIZE - 1) / Byte.SIZE;
   }
@@ -100,7 +105,7 @@ public class BufferArrayGrouper implements VectorGrouper, IntGrouper
 
     this.bufferSupplier = Preconditions.checkNotNull(bufferSupplier, "bufferSupplier");
     this.aggregators = aggregators;
-    this.cardinalityWithMissingValue = cardinality + 1;
+    this.cardinalityWithMissingValue = Ints.checkedCast((long) cardinality + 1);
     this.recordSize = aggregators.spaceNeeded();
   }
 
@@ -110,7 +115,7 @@ public class BufferArrayGrouper implements VectorGrouper, IntGrouper
     if (!initialized) {
       final ByteBuffer buffer = bufferSupplier.get();
 
-      final int usedFlagBufferEnd = getUsedFlagBufferCapacity(cardinalityWithMissingValue);
+      final int usedFlagBufferEnd = Ints.checkedCast(getUsedFlagBufferCapacity(cardinalityWithMissingValue));
 
       // Sanity check on buffer capacity.
       if (usedFlagBufferEnd + (long) cardinalityWithMissingValue * recordSize > buffer.capacity()) {

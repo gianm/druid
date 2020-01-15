@@ -303,7 +303,7 @@ public class LookupReferencesManager implements LookupExtractorFactoryContainerP
   }
 
   // Note that this should ensure that "toLoad" and "toDrop" are disjoint.
-  LookupsState<LookupExtractorFactoryContainer> getAllLookupsState()
+  public LookupsState<LookupExtractorFactoryContainer> getAllLookupsState()
   {
     Preconditions.checkState(lifecycleLock.awaitStarted(1, TimeUnit.MILLISECONDS));
 
