@@ -20,6 +20,7 @@
 package org.apache.druid.sql.calcite.planner;
 
 import com.google.common.base.Preconditions;
+import com.google.common.collect.Iterables;
 import com.google.common.io.BaseEncoding;
 import com.google.common.primitives.Chars;
 import org.apache.calcite.jdbc.CalciteSchema;
@@ -46,6 +47,7 @@ import org.apache.druid.segment.column.ValueType;
 import org.apache.druid.server.security.AuthorizerMapper;
 import org.apache.druid.sql.calcite.schema.DruidSchema;
 import org.apache.druid.sql.calcite.schema.InformationSchema;
+import org.apache.druid.sql.calcite.schema.LookupSchema;
 import org.apache.druid.sql.calcite.schema.SystemSchema;
 import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
@@ -55,8 +57,10 @@ import org.joda.time.format.DateTimeFormatter;
 import org.joda.time.format.DateTimeFormatterBuilder;
 import org.joda.time.format.ISODateTimeFormat;
 
+import javax.annotation.Nullable;
 import java.nio.charset.Charset;
 import java.util.NavigableSet;
+import java.util.TreeSet;
 import java.util.regex.Pattern;
 
 /**
@@ -104,12 +108,14 @@ public class Calcites
 
   public static SchemaPlus createRootSchema(
       final DruidSchema druidSchema,
+      final LookupSchema lookupSchema,
       final SystemSchema systemSchema,
       final AuthorizerMapper authorizerMapper
   )
   {
     final SchemaPlus rootSchema = CalciteSchema.createRootSchema(false, false).plus();
     rootSchema.add(DruidSchema.NAME, druidSchema);
+    rootSchema.add(LookupSchema.NAME, lookupSchema);
     rootSchema.add(InformationSchema.NAME, new InformationSchema(rootSchema, authorizerMapper));
     rootSchema.add(SystemSchema.NAME, systemSchema);
     return rootSchema;
@@ -137,6 +143,7 @@ public class Calcites
 
   }
 
+  @Nullable
   public static ValueType getValueTypeForSqlTypeName(SqlTypeName sqlTypeName)
   {
     if (SqlTypeName.FLOAT == sqlTypeName) {
@@ -357,11 +364,20 @@ public class Calcites
     return rexNode instanceof RexLiteral && SqlTypeName.INT_TYPES.contains(rexNode.getType().getSqlTypeName());
   }
 
-  public static String findUnusedPrefix(final String basePrefix, final NavigableSet<String> strings)
+  public static String findUnusedPrefixForDigits(final String basePrefix, final Iterable<String> strings)
   {
+    final NavigableSet<String> navigableStrings;
+
+    if (strings instanceof NavigableSet) {
+      navigableStrings = (NavigableSet<String>) strings;
+    } else {
+      navigableStrings = new TreeSet<>();
+      Iterables.addAll(navigableStrings, strings);
+    }
+
     String prefix = basePrefix;
 
-    while (!isUnusedPrefix(prefix, strings)) {
+    while (!isUnusedPrefix(prefix, navigableStrings)) {
       prefix = "_" + prefix;
     }
 

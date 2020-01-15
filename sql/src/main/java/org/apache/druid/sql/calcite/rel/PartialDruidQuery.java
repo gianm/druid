@@ -47,6 +47,14 @@ import java.util.function.Supplier;
  */
 public class PartialDruidQuery
 {
+  // Factors used for computing cost (see estimateCost). These are intended to encourage pushing down filters
+  // and limits through stacks of nested queries when possible.
+  private static final double COST_PER_COLUMN = 0.001;
+  private static final double COST_FILTER_MULTIPLIER = 0.1; // Bonus for WHERE
+  private static final double COST_GROUPING_MULTIPLIER = 2.0; // Penalty for GROUP BY
+  private static final double COST_LIMIT_MULTIPLIER = 0.5; // Bonus for LIMIT; encourage pushing them down
+  private static final double COST_HAVING_MULTIPLIER = 5.0; // Penalty for HAVING; encourage pushing to WHERE
+
   private final Supplier<RelBuilder> builderSupplier;
   private final RelNode scan;
   private final Filter whereFilter;
@@ -103,7 +111,7 @@ public class PartialDruidQuery
   {
     final Supplier<RelBuilder> builderSupplier = () -> RelFactories.LOGICAL_BUILDER.create(
         scanRel.getCluster(),
-        scanRel.getTable().getRelOptSchema()
+        scanRel.getTable() != null ? scanRel.getTable().getRelOptSchema() : null
     );
     return new PartialDruidQuery(builderSupplier, scanRel, null, null, null, null, null, null, null);
   }
@@ -303,7 +311,14 @@ public class PartialDruidQuery
       final boolean finalizeAggregations
   )
   {
-    return new DruidQuery(this, dataSource, sourceRowSignature, plannerContext, rexBuilder, finalizeAggregations);
+    return DruidQuery.fromPartialQuery(
+        this,
+        dataSource,
+        sourceRowSignature,
+        plannerContext,
+        rexBuilder,
+        finalizeAggregations
+    );
   }
 
   public boolean canAccept(final Stage stage)
@@ -387,6 +402,43 @@ public class PartialDruidQuery
       default:
         throw new ISE("WTF?! Unknown stage: %s", currentStage);
     }
+  }
+
+  public double estimateCost(final double baseCost)
+  {
+    double cost = baseCost;
+
+    if (getSelectProject() != null) {
+      cost += COST_PER_COLUMN * getSelectProject().getChildExps().size();
+    }
+
+    if (getWhereFilter() != null) {
+      cost *= COST_FILTER_MULTIPLIER;
+    }
+
+    if (getAggregate() != null) {
+      cost *= COST_GROUPING_MULTIPLIER;
+      cost += COST_PER_COLUMN * getAggregate().getGroupSet().size();
+      cost += COST_PER_COLUMN * getAggregate().getAggCallList().size();
+    }
+
+    if (getAggregateProject() != null) {
+      cost += COST_PER_COLUMN * getAggregateProject().getChildExps().size();
+    }
+
+    if (getSort() != null && getSort().fetch != null) {
+      cost *= COST_LIMIT_MULTIPLIER;
+    }
+
+    if (getSortProject() != null) {
+      cost += COST_PER_COLUMN * getSortProject().getChildExps().size();
+    }
+
+    if (getHavingFilter() != null) {
+      cost *= COST_HAVING_MULTIPLIER;
+    }
+
+    return cost;
   }
 
   private void validateStage(final Stage stage)

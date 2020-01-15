@@ -75,6 +75,7 @@ import org.apache.druid.query.groupby.GroupByQueryRunnerFactory;
 import org.apache.druid.query.groupby.GroupByQueryRunnerTest;
 import org.apache.druid.query.groupby.strategy.GroupByStrategySelector;
 import org.apache.druid.query.lookup.LookupExtractorFactoryContainerProvider;
+import org.apache.druid.query.lookup.LookupReferencesManager;
 import org.apache.druid.query.metadata.SegmentMetadataQueryConfig;
 import org.apache.druid.query.metadata.SegmentMetadataQueryQueryToolChest;
 import org.apache.druid.query.metadata.SegmentMetadataQueryRunnerFactory;
@@ -118,6 +119,7 @@ import org.apache.druid.sql.calcite.planner.DruidOperatorTable;
 import org.apache.druid.sql.calcite.planner.PlannerConfig;
 import org.apache.druid.sql.calcite.planner.PlannerFactory;
 import org.apache.druid.sql.calcite.schema.DruidSchema;
+import org.apache.druid.sql.calcite.schema.LookupSchema;
 import org.apache.druid.sql.calcite.schema.MetadataSegmentView;
 import org.apache.druid.sql.calcite.schema.SystemSchema;
 import org.apache.druid.sql.calcite.view.NoopViewManager;
@@ -222,15 +224,16 @@ public class CalciteTests
 
         // This Module is just to get a LookupExtractorFactoryContainerProvider with a usable "lookyloo" lookup.
 
-        binder.bind(LookupExtractorFactoryContainerProvider.class).toInstance(
+        final LookupReferencesManager lookupReferencesManager =
             LookupEnabledTestExprMacroTable.createTestLookupReferencesManager(
                 ImmutableMap.of(
                     "a", "xa",
-                    "abc", "xabc"
+                    "abc", "xabc",
+                    "nosuchkey", "mysteryvalue"
                 )
-            )
-        );
-
+            );
+        binder.bind(LookupReferencesManager.class).toInstance(lookupReferencesManager);
+        binder.bind(LookupExtractorFactoryContainerProvider.class).toInstance(lookupReferencesManager);
       }
   );
 
@@ -723,7 +726,10 @@ public class CalciteTests
         .buildMMappedIndex();
 
 
-    return new SpecificSegmentsQuerySegmentWalker(conglomerate).add(
+    return new SpecificSegmentsQuerySegmentWalker(
+        conglomerate,
+        INJECTOR.getInstance(LookupReferencesManager.class)
+    ).add(
         DataSegment.builder()
                    .dataSource(DATASOURCE1)
                    .interval(index1.getDataInterval())
@@ -860,6 +866,10 @@ public class CalciteTests
     ).get(0);
   }
 
+  public static LookupSchema createMockLookupSchema()
+  {
+    return new LookupSchema(INJECTOR.getInstance(LookupReferencesManager.class));
+  }
 
   public static SystemSchema createMockSystemSchema(
       final DruidSchema druidSchema,

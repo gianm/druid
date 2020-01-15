@@ -39,7 +39,7 @@ import org.apache.druid.query.TableDataSource;
 import org.apache.druid.query.groupby.GroupByQuery;
 import org.apache.druid.sql.calcite.table.RowSignature;
 
-import javax.annotation.Nullable;
+import javax.annotation.Nonnull;
 import java.util.List;
 
 /**
@@ -118,16 +118,13 @@ public class DruidOuterQueryRel extends DruidRel<DruidOuterQueryRel>
     return 1 + ((DruidRel) sourceRel).getQueryCount();
   }
 
-  @Nullable
+  @Nonnull
   @Override
   public DruidQuery toDruidQuery(final boolean finalizeAggregations)
   {
     // Must finalize aggregations on subqueries.
 
     final DruidQuery subQuery = ((DruidRel) sourceRel).toDruidQuery(true);
-    if (subQuery == null) {
-      return null;
-    }
 
     final GroupByQuery groupByQuery = subQuery.toGroupByQuery();
     if (groupByQuery == null) {
@@ -144,6 +141,7 @@ public class DruidOuterQueryRel extends DruidRel<DruidOuterQueryRel>
     );
   }
 
+  @Nonnull
   @Override
   public DruidQuery toDruidQueryForExplaining()
   {
@@ -232,6 +230,10 @@ public class DruidOuterQueryRel extends DruidRel<DruidOuterQueryRel>
   @Override
   public RelOptCost computeSelfCost(final RelOptPlanner planner, final RelMetadataQuery mq)
   {
-    return planner.getCostFactory().makeCost(mq.getRowCount(sourceRel), 0, 0).multiplyBy(10);
+    // TODO(gianm): Pull out numbers into constants
+    return planner
+        .getCostFactory()
+        .makeCost(partialQuery.estimateCost(DruidQueryRel.COST_BASE), 0, 0)
+        .multiplyBy(0.1);
   }
 }

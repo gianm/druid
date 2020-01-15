@@ -34,6 +34,7 @@ import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.guava.Sequence;
 import org.apache.druid.java.util.common.guava.Sequences;
 
+import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.List;
@@ -114,13 +115,14 @@ public class DruidUnionRel extends DruidRel<DruidUnionRel>
     throw new UnsupportedOperationException();
   }
 
-  @Nullable
+  @Nonnull
   @Override
   public DruidQuery toDruidQuery(final boolean finalizeAggregations)
   {
     throw new UnsupportedOperationException();
   }
 
+  @Nonnull
   @Override
   public DruidQuery toDruidQueryForExplaining()
   {

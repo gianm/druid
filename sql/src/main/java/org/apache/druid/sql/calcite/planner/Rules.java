@@ -74,7 +74,6 @@ import org.apache.calcite.tools.RelBuilder;
 import org.apache.druid.sql.calcite.rel.QueryMaker;
 import org.apache.druid.sql.calcite.rule.DruidRelToDruidRule;
 import org.apache.druid.sql.calcite.rule.DruidRules;
-import org.apache.druid.sql.calcite.rule.DruidSemiJoinRule;
 import org.apache.druid.sql.calcite.rule.DruidTableScanRule;
 import org.apache.druid.sql.calcite.rule.ProjectAggregatePruneUnusedCallRule;
 import org.apache.druid.sql.calcite.rule.SortCollapseRule;
@@ -202,7 +201,7 @@ public class Rules
         .addAll(DruidRules.rules());
 
     if (plannerContext.getPlannerConfig().getMaxSemiJoinRowsInMemory() > 0) {
-      retVal.add(DruidSemiJoinRule.instance());
+//      retVal.add(DruidSemiJoinRule.instance());
     }
 
     return retVal.build();
