@@ -74,13 +74,20 @@ public class CostEstimates
    * Multiplier to apply to an outer query via {@link DruidOuterQueryRel}. Encourages pushing down time-saving
    * operations to the lowest level of the query stack, because they'll have bigger impact there.
    */
-  static final double MULTIPLIER_OUTER_QUERY = 0.1;
+  static final double MULTIPLIER_OUTER_QUERY = .1;
 
   /**
-   * Multiplier to apply to a join when the left-hand side is a subquery. Encourages avoiding subqueries. Subqueries
-   * inside joins must be inlined, which incurs substantial reduction in scalability, so this high number is justified.
+   * Multiplier to apply to a join when the left side is a subquery on a {@link org.apache.druid.query.TableDataSource}.
+   * Strongly encourages avoiding subqueries on tables, since they must be inlined and then the join must run on
+   * the Broker.
    */
-  static final double MULTIPLIER_JOIN_SUBQUERY = 1000000000;
+  static final double MULTIPLIER_JOIN_LEFT_SUBQUERY_TABLE = 1e10;
+
+  /**
+   * Multiplier to apply to a join when the right side is a subquery. Encourages avoiding subqueries on these
+   * datasources, since they involve building new join hashtables at query time.
+   */
+  static final double MULTIPLIER_JOIN_RIGHT_SUBQUERY = 1e4;
 
   private CostEstimates()
   {

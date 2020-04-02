@@ -62,12 +62,8 @@ public class DruidJoinRule extends RelOptRule
   public boolean matches(RelOptRuleCall call)
   {
     final Join join = call.rel(0);
-    final DruidRel<?> right = call.rel(2);
 
-    // 1) Condition must be handleable.
-    // 2) Right cannot be a join; we want to generate left-heavy trees.
-    return canHandleCondition(join.getCondition(), join.getLeft().getRowType())
-           && !(right instanceof DruidJoinQueryRel);
+    return canHandleCondition(join.getCondition(), join.getLeft().getRowType());
   }
 
   @Override

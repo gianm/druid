@@ -49,6 +49,7 @@ import org.apache.druid.query.timeboundary.TimeBoundaryQuery;
 import org.apache.druid.query.timeseries.TimeseriesQuery;
 import org.apache.druid.segment.VirtualColumn;
 import org.apache.druid.segment.VirtualColumns;
+import org.apache.druid.segment.column.ValueType;
 import org.joda.time.Interval;
 
 import javax.annotation.Nullable;
@@ -60,6 +61,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
+ *
  */
 public class Druids
 {
@@ -754,6 +756,7 @@ public class Druids
     private long limit;
     private DimFilter dimFilter;
     private List<String> columns;
+    private List<ValueType> columnTypes;
     private Boolean legacy;
     private ScanQuery.Order order;
 
@@ -768,6 +771,7 @@ public class Druids
       limit = 0;
       dimFilter = null;
       columns = new ArrayList<>();
+      columnTypes = null;
       legacy = null;
       order = null;
     }
@@ -784,6 +788,7 @@ public class Druids
           order,
           dimFilter,
           columns,
+          columnTypes,
           legacy,
           context
       );
@@ -800,6 +805,7 @@ public class Druids
           .limit(query.getScanRowsLimit())
           .filters(query.getFilter())
           .columns(query.getColumns())
+          .columnTypes(query.getColumnTypes())
           .legacy(query.isLegacy())
           .context(query.getContext())
           .order(query.getOrder());
@@ -873,6 +879,18 @@ public class Druids
     public ScanQueryBuilder columns(String... c)
     {
       columns = Arrays.asList(c);
+      return this;
+    }
+
+    public ScanQueryBuilder columnTypes(List<ValueType> c)
+    {
+      columnTypes = c;
+      return this;
+    }
+
+    public ScanQueryBuilder columnTypes(ValueType... c)
+    {
+      columnTypes = Arrays.asList(c);
       return this;
     }
 

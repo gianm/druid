@@ -50,7 +50,6 @@ import org.apache.calcite.rel.rules.IntersectToDistinctRule;
 import org.apache.calcite.rel.rules.JoinCommuteRule;
 import org.apache.calcite.rel.rules.JoinProjectTransposeRule;
 import org.apache.calcite.rel.rules.JoinPushExpressionsRule;
-import org.apache.calcite.rel.rules.JoinPushThroughJoinRule;
 import org.apache.calcite.rel.rules.MatchRule;
 import org.apache.calcite.rel.rules.ProjectFilterTransposeRule;
 import org.apache.calcite.rel.rules.ProjectMergeRule;
@@ -111,8 +110,8 @@ public class Rules
           ProjectWindowTransposeRule.INSTANCE,
           MatchRule.INSTANCE,
           JoinCommuteRule.SWAP_OUTER,
-          JoinPushThroughJoinRule.RIGHT,
-          JoinPushThroughJoinRule.LEFT,
+//          JoinPushThroughJoinRule.RIGHT,
+//          JoinPushThroughJoinRule.LEFT,
           SortProjectTransposeRule.INSTANCE,
           SortJoinTransposeRule.INSTANCE,
           SortRemoveConstantKeysRule.INSTANCE,
@@ -167,8 +166,12 @@ public class Rules
           IntersectToDistinctRule.INSTANCE
       );
 
-  // Rules from RelOptUtil's registerAbstractRelationalRules, except AggregateMergeRule. (It causes
-  // testDoubleNestedGroupBy2 to fail).
+  // Rules from RelOptUtil's registerAbstractRelationalRules, minus:
+  //
+  // 1) AggregateMergeRule (it causes testDoubleNestedGroupBy2 to fail)
+  // 2) SemiJoinRule.PROJECT and SemiJoinRule.JOIN (we don't need to detect semi-joins, because they are handled
+  //    fine as-is by DruidJoinRule).
+  // 3) JoinCommuteRule (it's included in BASE_RULES).
   private static final List<RelOptRule> ABSTRACT_RELATIONAL_RULES =
       ImmutableList.of(
           FilterJoinRule.FILTER_ON_JOIN,
@@ -186,8 +189,8 @@ public class Rules
   // Rules that pull projections up above a join. This lets us eliminate some subqueries.
   private static final List<RelOptRule> JOIN_PROJECT_TRANSPOSE_RULES =
       ImmutableList.of(
-          JoinProjectTransposeRule.RIGHT_PROJECT,
-          JoinProjectTransposeRule.LEFT_PROJECT
+          JoinProjectTransposeRule.LEFT_PROJECT_INCLUDE_OUTER,
+          JoinProjectTransposeRule.RIGHT_PROJECT_INCLUDE_OUTER
       );
 
   private Rules()
@@ -197,15 +200,18 @@ public class Rules
 
   public static List<Program> programs(final PlannerContext plannerContext, final QueryMaker queryMaker)
   {
-    final Program hepProgram =
+    // Program that pre-processes the tree before letting the full-on VolcanoPlanner loose.
+    final Program preProgram =
         Programs.sequence(
             Programs.subQuery(DefaultRelMetadataProvider.INSTANCE),
-            new DecorrelateAndTrimFieldsProgram(),
+//            Programs.hep(JOIN_PROJECT_TRANSPOSE_RULES, true, DefaultRelMetadataProvider.INSTANCE),
+            DecorrelateAndTrimFieldsProgram.INSTANCE,
             Programs.hep(REDUCTION_RULES, true, DefaultRelMetadataProvider.INSTANCE)
         );
+
     return ImmutableList.of(
-        Programs.sequence(hepProgram, Programs.ofRules(druidConventionRuleSet(plannerContext, queryMaker))),
-        Programs.sequence(hepProgram, Programs.ofRules(bindableConventionRuleSet(plannerContext)))
+        Programs.sequence(preProgram, Programs.ofRules(druidConventionRuleSet(plannerContext, queryMaker))),
+        Programs.sequence(preProgram, Programs.ofRules(bindableConventionRuleSet(plannerContext)))
     );
   }
 
@@ -243,6 +249,7 @@ public class Rules
     rules.addAll(ABSTRACT_RULES);
     rules.addAll(ABSTRACT_RELATIONAL_RULES);
     rules.addAll(JOIN_PROJECT_TRANSPOSE_RULES);
+//    rules.add(ProjectJoinTransposeRule.INSTANCE);
 
     if (!plannerConfig.isUseApproximateCountDistinct()) {
       // For some reason, even though we support grouping sets, using AggregateExpandDistinctAggregatesRule.INSTANCE
@@ -261,6 +268,8 @@ public class Rules
   // accessible through Programs.standard (which we don't want, since it also adds Enumerable rules).
   private static class DecorrelateAndTrimFieldsProgram implements Program
   {
+    private static final DecorrelateAndTrimFieldsProgram INSTANCE = new DecorrelateAndTrimFieldsProgram();
+
     @Override
     public RelNode run(
         RelOptPlanner planner,
@@ -270,8 +279,8 @@ public class Rules
         List<RelOptLattice> lattices
     )
     {
-      final RelNode decorrelatedRel = RelDecorrelator.decorrelateQuery(rel);
-      final RelBuilder relBuilder = RelFactories.LOGICAL_BUILDER.create(decorrelatedRel.getCluster(), null);
+      final RelBuilder relBuilder = RelFactories.LOGICAL_BUILDER.create(rel.getCluster(), null);
+      final RelNode decorrelatedRel = RelDecorrelator.decorrelateQuery(rel, relBuilder);
       return new RelFieldTrimmer(null, relBuilder).trim(decorrelatedRel);
     }
   }

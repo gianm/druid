@@ -290,6 +290,11 @@ public interface QueryMetrics<QueryType extends Query<?>>
   QueryMetrics<QueryType> reportCpuTime(long timeNs);
 
   /**
+   * Registers "SQL planner time" metric.
+   */
+  QueryMetrics<QueryType> reportSqlPlannerTime(long timeNs);
+
+  /**
    * Registers "time to first byte" metric.
    */
   QueryMetrics<QueryType> reportNodeTimeToFirstByte(long timeNs);

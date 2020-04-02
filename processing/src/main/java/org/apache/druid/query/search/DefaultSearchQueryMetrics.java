@@ -214,6 +214,12 @@ public class DefaultSearchQueryMetrics implements SearchQueryMetrics
   }
 
   @Override
+  public QueryMetrics reportSqlPlannerTime(long timeNs)
+  {
+    return delegateQueryMetrics.reportSqlPlannerTime(timeNs);
+  }
+
+  @Override
   public QueryMetrics reportNodeTimeToFirstByte(long timeNs)
   {
     return delegateQueryMetrics.reportNodeTimeToFirstByte(timeNs);

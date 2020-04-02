@@ -130,7 +130,10 @@ public class ScanQueryQueryToolChest extends QueryToolChest<ScanResultValue, Sca
   @Override
   public RowSignature resultArraySignature(final ScanQuery query)
   {
-    if (query.getColumns() == null || query.getColumns().isEmpty()) {
+    final List<String> columns = query.getColumns();
+    final List<ValueType> columnTypes = query.getColumnTypes();
+
+    if (columns == null || columns.isEmpty()) {
       // Note: if no specific list of columns is provided, then since we can't predict what columns will come back, we
       // unfortunately can't do array-based results. In this case, there is a major difference between standard and
       // array-based results: the standard results will detect and return _all_ columns, whereas the array-based results
@@ -143,16 +146,23 @@ public class ScanQueryQueryToolChest extends QueryToolChest<ScanResultValue, Sca
         builder.add(ScanQueryEngine.LEGACY_TIMESTAMP_KEY, null);
       }
 
-      for (String columnName : query.getColumns()) {
-        // With the Scan query we only know the columnType for virtual columns. Let's report those, at least.
+      for (int i = 0; i < columns.size(); i++) {
+        final String columnName = columns.get(i);
         final ValueType columnType;
 
-        final VirtualColumn virtualColumn = query.getVirtualColumns().getVirtualColumn(columnName);
-        if (virtualColumn != null) {
-          columnType = virtualColumn.capabilities(columnName).getType();
+        if (columnTypes != null) {
+          // Use column type hints if available.
+          columnType = columnTypes.get(i);
         } else {
-          // Unknown type. In the future, it would be nice to have a way to fill these in.
-          columnType = null;
+          // Even if column type hints aren't provided, we still know the type for virtual columns. Use if available.
+          final VirtualColumn virtualColumn = query.getVirtualColumns().getVirtualColumn(columnName);
+
+          if (virtualColumn != null) {
+            columnType = virtualColumn.capabilities(columnName).getType();
+          } else {
+            // Unknown type.
+            columnType = null;
+          }
         }
 
         builder.add(columnName, columnType);

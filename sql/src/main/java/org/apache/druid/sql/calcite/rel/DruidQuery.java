@@ -89,6 +89,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * A fully formed Druid query, built from a {@link PartialDruidQuery}. The work to develop this query is done
@@ -112,7 +113,6 @@ public class DruidQuery
   private final Sorting sorting;
 
   private final Query query;
-  private final RowSignature sourceRowSignature;
   private final RowSignature outputRowSignature;
   private final RelDataType outputRowType;
   private final VirtualColumnRegistry virtualColumnRegistry;
@@ -135,7 +135,6 @@ public class DruidQuery
     this.selectProjection = selectProjection;
     this.grouping = grouping;
     this.sorting = sorting;
-    this.sourceRowSignature = Preconditions.checkNotNull(sourceRowSignature, "sourceRowSignature");
     this.outputRowSignature = computeOutputRowSignature(sourceRowSignature, selectProjection, grouping, sorting);
     this.outputRowType = Preconditions.checkNotNull(outputRowType, "outputRowType");
     this.virtualColumnRegistry = Preconditions.checkNotNull(virtualColumnRegistry, "virtualColumnRegistry");
@@ -976,9 +975,12 @@ public class DruidQuery
 
     // Compute the list of columns to select.
     final Set<String> columns = new HashSet<>(outputRowSignature.getColumnNames());
+
     if (order != ScanQuery.Order.NONE) {
       columns.add(ColumnHolder.TIME_COLUMN_NAME);
     }
+
+    final List<String> sortedColumns = Ordering.natural().sortedCopy(columns);
 
     return new ScanQuery(
         dataSource,
@@ -989,7 +991,8 @@ public class DruidQuery
         scanLimit,
         order,
         filtration.getDimFilter(),
-        Ordering.natural().sortedCopy(columns),
+        sortedColumns,
+        sortedColumns.stream().map(c -> outputRowSignature.getColumnType(c).orElse(null)).collect(Collectors.toList()),
         false,
         ImmutableSortedMap.copyOf(plannerContext.getQueryContext())
     );

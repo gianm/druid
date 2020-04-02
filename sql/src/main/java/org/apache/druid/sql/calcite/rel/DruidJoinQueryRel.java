@@ -67,31 +67,33 @@ public class DruidJoinQueryRel extends DruidRel<DruidJoinQueryRel>
   private RelNode right;
 
   /**
-   * True if {@link #left} requires a subquery.
+   * Cost multiplier based on {@link #left}.
    *
-   * This is useful to store in a variable because {@link #left} is sometimes not actually a {@link DruidRel} when
-   * {@link #computeSelfCost} is called. (It might be a {@link org.apache.calcite.plan.volcano.RelSubset}.)
+   * Computed by {@link #computeLeftCostMultiplier}. This is useful to store in a variable because {@link #left} is
+   * sometimes not actually a {@link DruidRel} when {@link #computeSelfCost} is called. (It might be a
+   * {@link org.apache.calcite.plan.volcano.RelSubset}.)
    *
-   * @see #computeLeftRequiresSubquery(DruidRel)
+   * @see #computeLeftCostMultiplier(DruidRel)
    */
-  private final boolean leftRequiresSubquery;
+  private final double leftCostMultiplier;
 
   /**
-   * True if {@link #right} requires a subquery.
+   * Cost multiplier based on {@link #right}.
    *
-   * This is useful to store in a variable because {@link #left} is sometimes not actually a {@link DruidRel} when
-   * {@link #computeSelfCost} is called. (It might be a {@link org.apache.calcite.plan.volcano.RelSubset}.)
+   * Computed by {@link #computeRightCostMultiplier}. This is useful to store in a variable because {@link #right} is
+   * sometimes not actually a {@link DruidRel} when {@link #computeSelfCost} is called. (It might be a
+   * {@link org.apache.calcite.plan.volcano.RelSubset}.)
    *
-   * @see #computeLeftRequiresSubquery(DruidRel)
+   * @see #computeRightCostMultiplier(DruidRel)
    */
-  private final boolean rightRequiresSubquery;
+  private final double rightCostMultiplier;
 
   private DruidJoinQueryRel(
       RelOptCluster cluster,
       RelTraitSet traitSet,
       Join joinRel,
-      boolean leftRequiresSubquery,
-      boolean rightRequiresSubquery,
+      double leftCostMultiplier,
+      double rightCostMultiplier,
       PartialDruidQuery partialQuery,
       QueryMaker queryMaker
   )
@@ -100,8 +102,8 @@ public class DruidJoinQueryRel extends DruidRel<DruidJoinQueryRel>
     this.joinRel = joinRel;
     this.left = joinRel.getLeft();
     this.right = joinRel.getRight();
-    this.leftRequiresSubquery = leftRequiresSubquery;
-    this.rightRequiresSubquery = rightRequiresSubquery;
+    this.leftCostMultiplier = leftCostMultiplier;
+    this.rightCostMultiplier = rightCostMultiplier;
     this.partialQuery = partialQuery;
   }
 
@@ -118,8 +120,8 @@ public class DruidJoinQueryRel extends DruidRel<DruidJoinQueryRel>
         joinRel.getCluster(),
         joinRel.getTraitSet(),
         joinRel,
-        computeLeftRequiresSubquery(left),
-        computeRightRequiresSubquery(right),
+        computeLeftCostMultiplier(left),
+        computeRightCostMultiplier(right),
         PartialDruidQuery.create(joinRel),
         left.getQueryMaker()
     );
@@ -149,8 +151,8 @@ public class DruidJoinQueryRel extends DruidRel<DruidJoinQueryRel>
         getCluster(),
         getTraitSet().plusAll(newQueryBuilder.getRelTraits()),
         joinRel,
-        leftRequiresSubquery,
-        rightRequiresSubquery,
+        leftCostMultiplier,
+        rightCostMultiplier,
         newQueryBuilder,
         getQueryMaker()
     );
@@ -176,18 +178,14 @@ public class DruidJoinQueryRel extends DruidRel<DruidJoinQueryRel>
     final DataSource rightDataSource;
 
     if (computeLeftRequiresSubquery(leftDruidRel)) {
-      assert leftRequiresSubquery;
       leftDataSource = new QueryDataSource(leftQuery.getQuery());
     } else {
-      assert !leftRequiresSubquery;
       leftDataSource = leftQuery.getDataSource();
     }
 
     if (computeRightRequiresSubquery(rightDruidRel)) {
-      assert rightRequiresSubquery;
       rightDataSource = new QueryDataSource(rightQuery.getQuery());
     } else {
-      assert !rightRequiresSubquery;
       rightDataSource = rightQuery.getDataSource();
     }
 
@@ -250,8 +248,8 @@ public class DruidJoinQueryRel extends DruidRel<DruidJoinQueryRel>
                    .map(input -> RelOptRule.convert(input, DruidConvention.instance()))
                    .collect(Collectors.toList())
         ),
-        leftRequiresSubquery,
-        rightRequiresSubquery,
+        leftCostMultiplier,
+        rightCostMultiplier,
         partialQuery,
         getQueryMaker()
     );
@@ -290,8 +288,8 @@ public class DruidJoinQueryRel extends DruidRel<DruidJoinQueryRel>
         getCluster(),
         traitSet,
         joinRel.copy(joinRel.getTraitSet(), inputs),
-        leftRequiresSubquery,
-        rightRequiresSubquery,
+        leftCostMultiplier,
+        rightCostMultiplier,
         getPartialDruidQuery(),
         getQueryMaker()
     );
@@ -319,12 +317,9 @@ public class DruidJoinQueryRel extends DruidRel<DruidJoinQueryRel>
       throw new RuntimeException(e);
     }
 
-    return pw.input("left", left)
-             .input("right", right)
-             .item("condition", joinRel.getCondition())
-             .item("joinType", joinRel.getJoinType())
-             .item("query", queryString)
-             .item("signature", druidQuery.getOutputRowSignature());
+    return joinRel.explainTerms(pw)
+                  .item("query", queryString)
+                  .item("signature", druidQuery.getOutputRowSignature());
   }
 
   @Override
@@ -338,8 +333,8 @@ public class DruidJoinQueryRel extends DruidRel<DruidJoinQueryRel>
   {
     return planner.getCostFactory()
                   .makeCost(partialQuery.estimateCost(), 0, 0)
-                  .multiplyBy(leftRequiresSubquery ? CostEstimates.MULTIPLIER_JOIN_SUBQUERY : 1)
-                  .multiplyBy(rightRequiresSubquery ? CostEstimates.MULTIPLIER_JOIN_SUBQUERY : 1);
+                  .multiplyBy(leftCostMultiplier)
+                  .multiplyBy(rightCostMultiplier);
   }
 
   private static JoinType toDruidJoinType(JoinRelType calciteJoinType)
@@ -369,6 +364,25 @@ public class DruidJoinQueryRel extends DruidRel<DruidJoinQueryRel>
     // Right requires a subquery unless it's a scan or mapping on top of a global datasource.
     return !(DruidRels.isScanOrMapping(right, false)
              && DruidRels.dataSourceIfLeafRel(right).filter(DataSource::isGlobal).isPresent());
+  }
+
+  private static double computeLeftCostMultiplier(final DruidRel<?> left)
+  {
+    if (computeLeftRequiresSubquery(left)
+        && DruidRels.dataSourceIfLeafRel(left).filter(ds -> ds instanceof TableDataSource).isPresent()) {
+      return CostEstimates.MULTIPLIER_JOIN_LEFT_SUBQUERY_TABLE;
+    } else {
+      return 1.0;
+    }
+  }
+
+  private static double computeRightCostMultiplier(final DruidRel<?> right)
+  {
+    if (computeRightRequiresSubquery(right)) {
+      return CostEstimates.MULTIPLIER_JOIN_RIGHT_SUBQUERY;
+    } else {
+      return 1.0;
+    }
   }
 
   /**

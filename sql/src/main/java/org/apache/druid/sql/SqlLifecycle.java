@@ -94,7 +94,8 @@ public class SqlLifecycle
   private Map<String, Object> queryContext;
   private List<TypedValue> parameters;
   // init during plan
-  @Nullable private HttpServletRequest req;
+  @Nullable
+  private HttpServletRequest req;
   private PlannerContext plannerContext;
   private PrepareResult prepareResult;
   private PlannerResult plannerResult;
@@ -162,11 +163,15 @@ public class SqlLifecycle
       throws ValidationException, RelConversionException, SqlParseException
   {
     synchronized (lock) {
-      transition(State.INITIALIZED, State.PLANNED);
+      transition(State.INITIALIZED, State.PLANNING);
+
       try (DruidPlanner planner = plannerFactory.createPlanner(queryContext, parameters, authenticationResult)) {
         this.plannerContext = planner.getPlannerContext();
         this.plannerResult = planner.plan(sql);
       }
+
+      transition(State.PLANNING, State.PLANNED);
+
       return plannerContext;
     }
   }
@@ -375,6 +380,7 @@ public class SqlLifecycle
   {
     NEW,
     INITIALIZED,
+    PLANNING,
     PLANNED,
     AUTHORIZING,
     AUTHORIZED,

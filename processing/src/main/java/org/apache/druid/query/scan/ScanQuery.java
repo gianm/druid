@@ -21,10 +21,12 @@ package org.apache.druid.query.scan;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonValue;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Ordering;
+import org.apache.druid.java.util.common.IAE;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.UOE;
 import org.apache.druid.query.BaseQuery;
@@ -35,6 +37,7 @@ import org.apache.druid.query.filter.DimFilter;
 import org.apache.druid.query.spec.QuerySegmentSpec;
 import org.apache.druid.segment.VirtualColumns;
 import org.apache.druid.segment.column.ColumnHolder;
+import org.apache.druid.segment.column.ValueType;
 
 import javax.annotation.Nullable;
 import java.util.List;
@@ -114,6 +117,14 @@ public class ScanQuery extends BaseQuery<ScanResultValue>
   private final long scanRowsLimit;
   private final DimFilter dimFilter;
   private final List<String> columns;
+
+  /**
+   * Column type hints; if provided, must be same length as 'columns' and is used by
+   * {@link ScanQueryQueryToolChest#resultArraySignature} to report types to callers.
+   */
+  @Nullable
+  private final List<ValueType> columnTypes;
+
   private final Boolean legacy;
   private final Order order;
   private final Integer maxRowsQueuedForOrdering;
@@ -130,6 +141,7 @@ public class ScanQuery extends BaseQuery<ScanResultValue>
       @JsonProperty("order") Order order,
       @JsonProperty("filter") DimFilter dimFilter,
       @JsonProperty("columns") List<String> columns,
+      @Nullable @JsonProperty("columnTypes") List<ValueType> columnTypes,
       @JsonProperty("legacy") Boolean legacy,
       @JsonProperty("context") Map<String, Object> context
   )
@@ -149,6 +161,10 @@ public class ScanQuery extends BaseQuery<ScanResultValue>
     );
     this.dimFilter = dimFilter;
     this.columns = columns;
+    this.columnTypes = columnTypes;
+    if (this.columnTypes != null && (this.columns == null || this.columnTypes.size() != this.columns.size())) {
+      throw new IAE("'columnTypes', if provided, must be the same length as 'columns'");
+    }
     this.legacy = legacy;
     this.order = (order == null) ? Order.NONE : order;
     if (this.order != Order.NONE) {
@@ -253,6 +269,14 @@ public class ScanQuery extends BaseQuery<ScanResultValue>
     return columns;
   }
 
+  @Nullable
+  @JsonProperty
+  @JsonInclude(JsonInclude.Include.NON_NULL)
+  public List<ValueType> getColumnTypes()
+  {
+    return columnTypes;
+  }
+
   /**
    * Compatibility mode with the legacy scan-query extension.
    */
@@ -318,14 +342,24 @@ public class ScanQuery extends BaseQuery<ScanResultValue>
            Objects.equals(virtualColumns, scanQuery.virtualColumns) &&
            Objects.equals(resultFormat, scanQuery.resultFormat) &&
            Objects.equals(dimFilter, scanQuery.dimFilter) &&
-           Objects.equals(columns, scanQuery.columns);
+           Objects.equals(columns, scanQuery.columns) &&
+           Objects.equals(columnTypes, scanQuery.columnTypes);
   }
 
   @Override
   public int hashCode()
   {
-    return Objects.hash(super.hashCode(), virtualColumns, resultFormat, batchSize,
-                        scanRowsLimit, dimFilter, columns, legacy);
+    return Objects.hash(
+        super.hashCode(),
+        virtualColumns,
+        resultFormat,
+        batchSize,
+        scanRowsLimit,
+        dimFilter,
+        columns,
+        columnTypes,
+        legacy
+    );
   }
 
   @Override
@@ -340,6 +374,7 @@ public class ScanQuery extends BaseQuery<ScanResultValue>
            ", scanRowsLimit=" + scanRowsLimit +
            ", dimFilter=" + dimFilter +
            ", columns=" + columns +
+           (columnTypes != null ? ", columnTypes=" + columnTypes : "") +
            ", legacy=" + legacy +
            '}';
   }

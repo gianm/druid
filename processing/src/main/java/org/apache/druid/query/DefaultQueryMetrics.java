@@ -252,6 +252,13 @@ public class DefaultQueryMetrics<QueryType extends Query<?>> implements QueryMet
   }
 
   @Override
+  public QueryMetrics<QueryType> reportSqlPlannerTime(long timeNs)
+  {
+    // Don't emit by default.
+    return this;
+  }
+
+  @Override
   public QueryMetrics<QueryType> reportNodeTimeToFirstByte(long timeNs)
   {
     return reportMillisTimeMetric("query/node/ttfb", timeNs);
