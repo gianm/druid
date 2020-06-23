@@ -84,13 +84,13 @@ import org.apache.druid.segment.join.Joinable;
 import org.apache.druid.segment.join.JoinableFactory;
 import org.apache.druid.segment.join.table.IndexedTableJoinable;
 import org.apache.druid.segment.join.table.RowBasedIndexedTable;
-import org.apache.druid.segment.loading.SegmentLoader;
 import org.apache.druid.segment.writeout.OffHeapMemorySegmentWriteOutMediumFactory;
 import org.apache.druid.server.DruidNode;
 import org.apache.druid.server.QueryLifecycleFactory;
 import org.apache.druid.server.QueryScheduler;
 import org.apache.druid.server.QueryStackTests;
 import org.apache.druid.server.SegmentManager;
+import org.apache.druid.server.SegmentManagerTest;
 import org.apache.druid.server.coordinator.BytesAccumulatingResponseHandler;
 import org.apache.druid.server.log.NoopRequestLogger;
 import org.apache.druid.server.security.Access;
@@ -120,7 +120,6 @@ import org.apache.druid.sql.calcite.view.NoopViewManager;
 import org.apache.druid.sql.calcite.view.ViewManager;
 import org.apache.druid.timeline.DataSegment;
 import org.apache.druid.timeline.partition.LinearShardSpec;
-import org.easymock.EasyMock;
 import org.joda.time.DateTime;
 import org.joda.time.Duration;
 import org.joda.time.chrono.ISOChronology;
@@ -1088,7 +1087,7 @@ public class CalciteTests
     final DruidSchema schema = new DruidSchema(
         CalciteTests.createMockQueryLifecycleFactory(walker, conglomerate),
         new TestServerInventoryView(walker.getSegments()),
-        new SegmentManager(EasyMock.createMock(SegmentLoader.class))
+        new SegmentManager(SegmentManagerTest.SEGMENT_LOADER)
         {
           @Override
           public Set<String> getDataSourceNames()

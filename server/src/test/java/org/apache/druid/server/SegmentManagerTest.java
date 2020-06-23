@@ -60,7 +60,7 @@ import java.util.stream.Collectors;
 
 public class SegmentManagerTest
 {
-  private static final SegmentLoader SEGMENT_LOADER = new SegmentLoader()
+  public static final SegmentLoader SEGMENT_LOADER = new SegmentLoader()
   {
     @Override
     public boolean isSegmentLoaded(DataSegment segment)

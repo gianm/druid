@@ -35,6 +35,8 @@ import java.nio.ByteBuffer;
  */
 public interface VectorAggregator
 {
+  boolean NATIVE = true;
+
   /**
    * Same as {@link BufferAggregator#init}.
    */

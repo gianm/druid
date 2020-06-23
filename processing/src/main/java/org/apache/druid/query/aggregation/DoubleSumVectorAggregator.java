@@ -19,10 +19,12 @@
 
 package org.apache.druid.query.aggregation;
 
+import org.apache.druid.jni.JniWrapper;
 import org.apache.druid.segment.vector.VectorValueSelector;
 
 import javax.annotation.Nullable;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 
 public class DoubleSumVectorAggregator implements VectorAggregator
 {
@@ -49,7 +51,16 @@ public class DoubleSumVectorAggregator implements VectorAggregator
       sum += vector[i];
     }
 
-    buf.putDouble(position, buf.getDouble(position) + sum);
+    ByteOrder order = buf.order();
+    try {
+      if (NATIVE) {
+        buf.order(ByteOrder.nativeOrder());
+      }
+      buf.putDouble(position, buf.getDouble(position) + sum);
+    }
+    finally {
+      buf.order(order);
+    }
   }
 
   @Override
@@ -63,16 +74,39 @@ public class DoubleSumVectorAggregator implements VectorAggregator
   {
     final double[] vector = selector.getDoubleVector();
 
-    for (int i = 0; i < numRows; i++) {
-      final int position = positions[i] + positionOffset;
-      buf.putDouble(position, buf.getDouble(position) + vector[rows != null ? rows[i] : i]);
+    if (NATIVE) {
+      JniWrapper.INSTANCE.aggregateDoubleSum(
+          vector,
+          buf,
+          buf.hasArray() ? buf.array() : null,
+          numRows,
+          positions,
+          rows,
+          positionOffset + (buf.hasArray() ? buf.arrayOffset() : 0)
+      );
+    } else {
+      for (int i = 0; i < numRows; i++) {
+        final int position = positions[i] + positionOffset;
+        buf.putDouble(position, buf.getDouble(position) + vector[rows == null ? i : rows[i]]);
+      }
     }
   }
 
   @Override
   public Object get(final ByteBuffer buf, final int position)
   {
-    return buf.getDouble(position);
+    if (NATIVE) {
+      ByteOrder order = buf.order();
+      try {
+        buf.order(ByteOrder.nativeOrder());
+        return buf.getDouble(position);
+      }
+      finally {
+        buf.order(order);
+      }
+    } else {
+      return buf.getDouble(position);
+    }
   }
 
   @Override

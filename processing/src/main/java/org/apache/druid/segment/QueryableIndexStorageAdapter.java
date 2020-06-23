@@ -61,7 +61,7 @@ import java.util.Set;
  */
 public class QueryableIndexStorageAdapter implements StorageAdapter
 {
-  public static final int DEFAULT_VECTOR_SIZE = 512;
+  public static final int DEFAULT_VECTOR_SIZE = 1024;
 
   private final QueryableIndex index;
 

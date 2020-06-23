@@ -1691,6 +1691,53 @@
                         <npmVersion>6.4.1</npmVersion>
                     </configuration>
                 </plugin>
+                <plugin>
+                    <groupId>org.codehaus.mojo</groupId>
+                    <artifactId>native-maven-plugin</artifactId>
+                    <version>1.0-alpha-11</version>
+                    <extensions>true</extensions>
+                    <configuration>
+                        <javahOS>darwin</javahOS>
+                        <sources>
+                            <source>
+                                <directory>src/main/cpp</directory>
+                                <includes>
+                                    <include>**/*.cpp</include>
+                                </includes>
+                            </source>
+                            <source>
+                                <directory>src/main/cpp/include</directory>
+                            </source>
+                        </sources>
+                        <compilerProvider>generic-classic</compilerProvider>
+                        <compilerExecutable>clang++</compilerExecutable>
+                        <compilerStartOptions>
+                            <compilerStartOption>-Wall</compilerStartOption>
+                            <compilerStartOption>-O3</compilerStartOption>
+                            <compilerStartOption>-march=native</compilerStartOption>
+                            <compilerStartOption>-g</compilerStartOption>
+                        </compilerStartOptions>
+                        <linkerExecutable>clang++</linkerExecutable>
+                        <linkerStartOptions>
+                            <linkerStartOption>-m64</linkerStartOption>
+                            <linkerStartOption>-shared</linkerStartOption>
+                        </linkerStartOptions>
+                        <linkerEndOptions>
+                            <linkerEndOption>-o ${project.build.directory}/lib${project.name}.dylib</linkerEndOption>
+                        </linkerEndOptions>
+                    </configuration>
+                    <executions>
+                        <execution>
+                            <id>javah</id>
+                            <phase>compile</phase>
+                            <goals>
+                                <goal>initialize</goal>
+                                <goal>compile</goal>
+                                <goal>link</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                </plugin>
             </plugins>
         </pluginManagement>
     </build>

@@ -289,6 +289,10 @@
                     <excludedGroups>org.apache.druid.collections.test.annotation.Benchmark</excludedGroups>
                 </configuration>
             </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>native-maven-plugin</artifactId>
+            </plugin>
         </plugins>
     </build>
 

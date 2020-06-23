@@ -19,8 +19,11 @@
 
 package org.apache.druid.query.aggregation;
 
+import org.apache.druid.jni.JniWrapper;
+
 import javax.annotation.Nullable;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 
 public class CountVectorAggregator implements VectorAggregator
 {
@@ -33,8 +36,18 @@ public class CountVectorAggregator implements VectorAggregator
   @Override
   public void aggregate(final ByteBuffer buf, final int position, final int startRow, final int endRow)
   {
-    final int delta = endRow - startRow;
-    buf.putLong(position, buf.getLong(position) + delta);
+    ByteOrder order = buf.order();
+    try {
+      if (NATIVE) {
+        buf.order(ByteOrder.nativeOrder());
+      }
+
+      final int delta = endRow - startRow;
+      buf.putLong(position, buf.getLong(position) + delta);
+    }
+    finally {
+      buf.order(order);
+    }
   }
 
   @Override
@@ -46,16 +59,37 @@ public class CountVectorAggregator implements VectorAggregator
       final int positionOffset
   )
   {
-    for (int i = 0; i < numRows; i++) {
-      final int position = positions[i] + positionOffset;
-      buf.putLong(position, buf.getLong(position) + 1);
+    if (NATIVE) {
+      JniWrapper.INSTANCE.aggregateCount(
+          buf,
+          buf.hasArray() ? buf.array() : null,
+          numRows,
+          positions,
+          positionOffset + (buf.hasArray() ? buf.arrayOffset() : 0)
+      );
+    } else {
+      for (int i = 0; i < numRows; i++) {
+        final int position = positions[i] + positionOffset;
+        buf.putLong(position, buf.getLong(position) + 1);
+      }
     }
   }
 
   @Override
   public Object get(final ByteBuffer buf, final int position)
   {
-    return buf.getLong(position);
+    if (NATIVE) {
+      ByteOrder order = buf.order();
+      try {
+        buf.order(ByteOrder.nativeOrder());
+        return buf.getLong(position);
+      }
+      finally {
+        buf.order(order);
+      }
+    } else {
+      return buf.getLong(position);
+    }
   }
 
   @Override
