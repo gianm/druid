@@ -59,6 +59,7 @@ import org.apache.druid.java.util.http.client.response.HttpResponseHandler;
 import org.apache.druid.java.util.http.client.response.InputStreamFullResponseHandler;
 import org.apache.druid.java.util.http.client.response.InputStreamFullResponseHolder;
 import org.apache.druid.java.util.http.client.response.StringFullResponseHolder;
+import org.apache.druid.query.InlineDataSource;
 import org.apache.druid.query.QueryRunnerFactoryConglomerate;
 import org.apache.druid.query.aggregation.CountAggregatorFactory;
 import org.apache.druid.query.aggregation.DoubleSumAggregatorFactory;
@@ -84,7 +85,6 @@ import org.apache.druid.server.security.Authorizer;
 import org.apache.druid.server.security.AuthorizerMapper;
 import org.apache.druid.server.security.NoopEscalator;
 import org.apache.druid.sql.calcite.planner.PlannerConfig;
-import org.apache.druid.sql.calcite.schema.SystemSchema.SegmentsTable;
 import org.apache.druid.sql.calcite.table.RowSignatures;
 import org.apache.druid.sql.calcite.util.CalciteTestBase;
 import org.apache.druid.sql.calcite.util.CalciteTests;
@@ -515,7 +515,7 @@ public class SystemSchemaTest extends CalciteTestBase
         ImmutableSet.of("segments", "servers", "server_segments", "tasks", "supervisors"),
         tableMap.keySet()
     );
-    final SystemSchema.SegmentsTable segmentsTable = (SystemSchema.SegmentsTable) schema.getTableMap().get("segments");
+    final SegmentsTable segmentsTable = (SegmentsTable) schema.getTableMap().get("segments");
     final RelDataType rowType = segmentsTable.getRowType(new JavaTypeFactoryImpl());
     final List<RelDataTypeField> fields = rowType.getFieldList();
 
@@ -552,34 +552,8 @@ public class SystemSchemaTest extends CalciteTestBase
     EasyMock.expect(metadataView.getPublishedSegments()).andReturn(publishedSegments.iterator()).once();
 
     EasyMock.replay(client, request, responseHolder, responseHandler, metadataView);
-    DataContext dataContext = new DataContext()
-    {
-      @Override
-      public SchemaPlus getRootSchema()
-      {
-        return null;
-      }
 
-      @Override
-      public JavaTypeFactory getTypeFactory()
-      {
-        return null;
-      }
-
-      @Override
-      public QueryProvider getQueryProvider()
-      {
-        return null;
-      }
-
-      @Override
-      public Object get(String name)
-      {
-        return CalciteTests.SUPER_USER_AUTH_RESULT;
-      }
-    };
-
-    final List<Object[]> rows = segmentsTable.scan(dataContext).toList();
+    final List<Object[]> rows = ((InlineDataSource) segmentsTable.getDataSource()).getRowsAsList();
     rows.sort((Object[] row1, Object[] row2) -> ((Comparable) row1[0]).compareTo(row2[0]));
 
     // total segments = 8
@@ -706,7 +680,7 @@ public class SystemSchemaTest extends CalciteTestBase
     );
 
     // Verify value types.
-    verifyTypes(rows, SystemSchema.SEGMENTS_SIGNATURE);
+    verifyTypes(rows, SegmentsTable.SIGNATURE);
   }
 
   private void verifyRow(
@@ -787,7 +761,9 @@ public class SystemSchemaTest extends CalciteTestBase
             .once();
     EasyMock.expect(druidNodeDiscoveryProvider.getForNodeRole(NodeRole.PEON)).andReturn(peonNodeDiscovery).once();
 
-    EasyMock.expect(coordinatorNodeDiscovery.getAllNodes()).andReturn(ImmutableList.of(coordinator, coordinator2)).once();
+    EasyMock.expect(coordinatorNodeDiscovery.getAllNodes())
+            .andReturn(ImmutableList.of(coordinator, coordinator2))
+            .once();
     EasyMock.expect(overlordNodeDiscovery.getAllNodes()).andReturn(ImmutableList.of(overlord, overlord2)).once();
     EasyMock.expect(brokerNodeDiscovery.getAllNodes())
             .andReturn(ImmutableList.of(broker1, broker2, brokerWithBroadcastSegments))
@@ -800,7 +776,9 @@ public class SystemSchemaTest extends CalciteTestBase
     EasyMock.expect(peonNodeDiscovery.getAllNodes()).andReturn(ImmutableList.of(peon1, peon2)).once();
     EasyMock.expect(indexerNodeDiscovery.getAllNodes()).andReturn(ImmutableList.of(indexer)).once();
 
-    EasyMock.expect(coordinatorClient.findCurrentLeader()).andReturn(coordinator.getDruidNode().getHostAndPortToUse()).once();
+    EasyMock.expect(coordinatorClient.findCurrentLeader())
+            .andReturn(coordinator.getDruidNode().getHostAndPortToUse())
+            .once();
     EasyMock.expect(overlordClient.findCurrentLeader()).andReturn(overlord.getDruidNode().getHostAndPortToUse()).once();
 
     final List<DruidServer> servers = new ArrayList<>();
@@ -1187,7 +1165,9 @@ public class SystemSchemaTest extends CalciteTestBase
     HttpResponse httpResp = new DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
     InputStreamFullResponseHolder responseHolder = new InputStreamFullResponseHolder(httpResp.getStatus(), httpResp);
 
-    EasyMock.expect(client.go(EasyMock.eq(request), EasyMock.anyObject(InputStreamFullResponseHandler.class))).andReturn(responseHolder).once();
+    EasyMock.expect(client.go(EasyMock.eq(request), EasyMock.anyObject(InputStreamFullResponseHandler.class)))
+            .andReturn(responseHolder)
+            .once();
     EasyMock.expect(request.getUrl()).andReturn(new URL("http://test-host:1234/druid/indexer/v1/tasks")).anyTimes();
 
     String json = "[{\n"
@@ -1311,7 +1291,9 @@ public class SystemSchemaTest extends CalciteTestBase
     HttpResponse httpResp = new DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
     InputStreamFullResponseHolder responseHolder = new InputStreamFullResponseHolder(httpResp.getStatus(), httpResp);
 
-    EasyMock.expect(client.go(EasyMock.eq(request), EasyMock.anyObject(InputStreamFullResponseHandler.class))).andReturn(responseHolder).once();
+    EasyMock.expect(client.go(EasyMock.eq(request), EasyMock.anyObject(InputStreamFullResponseHandler.class)))
+            .andReturn(responseHolder)
+            .once();
 
     EasyMock.expect(responseHandler.getStatus()).andReturn(httpResp.getStatus().getCode()).anyTimes();
     EasyMock.expect(request.getUrl())

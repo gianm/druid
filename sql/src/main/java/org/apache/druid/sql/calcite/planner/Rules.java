@@ -20,7 +20,6 @@
 package org.apache.druid.sql.calcite.planner;
 
 import com.google.common.collect.ImmutableList;
-import org.apache.calcite.interpreter.Bindables;
 import org.apache.calcite.plan.RelOptLattice;
 import org.apache.calcite.plan.RelOptMaterialization;
 import org.apache.calcite.plan.RelOptPlanner;
@@ -38,7 +37,6 @@ import org.apache.calcite.rel.rules.AggregateExpandDistinctAggregatesRule;
 import org.apache.calcite.rel.rules.AggregateJoinTransposeRule;
 import org.apache.calcite.rel.rules.AggregateProjectMergeRule;
 import org.apache.calcite.rel.rules.AggregateProjectPullUpConstantsRule;
-import org.apache.calcite.rel.rules.AggregateReduceFunctionsRule;
 import org.apache.calcite.rel.rules.AggregateRemoveRule;
 import org.apache.calcite.rel.rules.AggregateStarTableRule;
 import org.apache.calcite.rel.rules.AggregateValuesRule;
@@ -54,7 +52,6 @@ import org.apache.calcite.rel.rules.MatchRule;
 import org.apache.calcite.rel.rules.ProjectFilterTransposeRule;
 import org.apache.calcite.rel.rules.ProjectMergeRule;
 import org.apache.calcite.rel.rules.ProjectRemoveRule;
-import org.apache.calcite.rel.rules.ProjectTableScanRule;
 import org.apache.calcite.rel.rules.ProjectToWindowRule;
 import org.apache.calcite.rel.rules.ProjectWindowTransposeRule;
 import org.apache.calcite.rel.rules.PruneEmptyRules;
@@ -86,7 +83,6 @@ import java.util.List;
 public class Rules
 {
   public static final int DRUID_CONVENTION_RULES = 0;
-  public static final int BINDABLE_CONVENTION_RULES = 1;
 
   // Due to Calcite bug (CALCITE-3845), ReduceExpressionsRule can considered expression which is the same as the
   // previous input expression as reduced. Basically, the expression is actually not reduced but is still considered as
@@ -101,9 +97,8 @@ public class Rules
   // Rules from RelOptUtil's registerBaseRules, minus:
   //
   // 1) AggregateExpandDistinctAggregatesRule (it'll be added back later if approximate count distinct is disabled)
-  // 2) AggregateReduceFunctionsRule (it'll be added back for the Bindable rule set, but we don't want it for Druid
-  //    rules since it expands AVG, STDDEV, VAR, etc, and we have aggregators specifically designed for those
-  //    functions).
+  // 2) AggregateReduceFunctionsRule (we don't want it for Druid rules since it expands AVG, STDDEV, VAR, etc, and we
+  //    have aggregators specifically designed for those functions).
   // 3) JoinCommuteRule (we don't support reordering joins yet).
   // 4) JoinPushThroughJoinRule (we don't support reordering joins yet).
   private static final List<RelOptRule> BASE_RULES =
@@ -126,14 +121,6 @@ public class Rules
           SortUnionTransposeRule.INSTANCE,
           ExchangeRemoveConstantKeysRule.EXCHANGE_INSTANCE,
           ExchangeRemoveConstantKeysRule.SORT_EXCHANGE_INSTANCE
-      );
-
-  // Rules for scanning via Bindable, embedded directly in RelOptUtil's registerDefaultRules.
-  private static final List<RelOptRule> DEFAULT_BINDABLE_RULES =
-      ImmutableList.of(
-          Bindables.BINDABLE_TABLE_SCAN_RULE,
-          ProjectTableScanRule.INSTANCE,
-          ProjectTableScanRule.INTERPRETER
       );
 
   // Rules from RelOptUtil's registerReductionRules, minus:
@@ -204,8 +191,6 @@ public class Rules
 
   public static List<Program> programs(final PlannerContext plannerContext, final QueryMaker queryMaker)
   {
-
-
     // Program that pre-processes the tree before letting the full-on VolcanoPlanner loose.
     final Program preProgram =
         Programs.sequence(
@@ -215,8 +200,7 @@ public class Rules
         );
 
     return ImmutableList.of(
-        Programs.sequence(preProgram, Programs.ofRules(druidConventionRuleSet(plannerContext, queryMaker))),
-        Programs.sequence(preProgram, Programs.ofRules(bindableConventionRuleSet(plannerContext)))
+        Programs.sequence(preProgram, Programs.ofRules(druidConventionRuleSet(plannerContext, queryMaker)))
     );
   }
 
@@ -245,16 +229,6 @@ public class Rules
         .addAll(DruidRules.rules());
 
     return retVal.build();
-  }
-
-  private static List<RelOptRule> bindableConventionRuleSet(final PlannerContext plannerContext)
-  {
-    return ImmutableList.<RelOptRule>builder()
-        .addAll(baseRuleSet(plannerContext))
-        .addAll(Bindables.RULES)
-        .addAll(DEFAULT_BINDABLE_RULES)
-        .add(AggregateReduceFunctionsRule.INSTANCE)
-        .build();
   }
 
   private static List<RelOptRule> baseRuleSet(final PlannerContext plannerContext)

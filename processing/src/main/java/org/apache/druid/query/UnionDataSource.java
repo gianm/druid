@@ -100,6 +100,12 @@ public class UnionDataSource implements DataSource
   }
 
   @Override
+  public boolean isOnBroker()
+  {
+    return dataSources.stream().allMatch(DataSource::isOnBroker);
+  }
+
+  @Override
   public boolean isConcrete()
   {
     return dataSources.stream().allMatch(DataSource::isConcrete);

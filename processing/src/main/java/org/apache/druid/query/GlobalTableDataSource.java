@@ -48,6 +48,12 @@ public class GlobalTableDataSource extends TableDataSource
     return true;
   }
 
+  @Override
+  public boolean isOnBroker()
+  {
+    return true;
+  }
+
   /**
    * Query results from Broadcast datasources should not be cached on broker
    * https://github.com/apache/druid/issues/10444

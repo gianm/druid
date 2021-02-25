@@ -23,18 +23,10 @@ import com.google.common.base.Preconditions;
 import com.google.common.base.Supplier;
 import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableList;
-import org.apache.calcite.DataContext;
-import org.apache.calcite.adapter.java.JavaTypeFactory;
 import org.apache.calcite.config.CalciteConnectionConfig;
 import org.apache.calcite.config.CalciteConnectionConfigImpl;
 import org.apache.calcite.config.CalciteConnectionProperty;
-import org.apache.calcite.interpreter.BindableConvention;
-import org.apache.calcite.interpreter.BindableRel;
-import org.apache.calcite.interpreter.Bindables;
 import org.apache.calcite.jdbc.CalciteSchema;
-import org.apache.calcite.linq4j.Enumerable;
-import org.apache.calcite.linq4j.Enumerator;
-import org.apache.calcite.plan.RelOptPlanner;
 import org.apache.calcite.plan.RelOptUtil;
 import org.apache.calcite.prepare.CalciteCatalogReader;
 import org.apache.calcite.prepare.Prepare;
@@ -45,7 +37,6 @@ import org.apache.calcite.rel.logical.LogicalSort;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rel.type.RelDataTypeFactory;
 import org.apache.calcite.rex.RexBuilder;
-import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.sql.SqlExplain;
 import org.apache.calcite.sql.SqlKind;
 import org.apache.calcite.sql.SqlNode;
@@ -58,8 +49,6 @@ import org.apache.calcite.tools.Frameworks;
 import org.apache.calcite.tools.Planner;
 import org.apache.calcite.tools.RelConversionException;
 import org.apache.calcite.tools.ValidationException;
-import org.apache.calcite.util.Pair;
-import org.apache.druid.java.util.common.guava.BaseSequence;
 import org.apache.druid.java.util.common.guava.Sequence;
 import org.apache.druid.java.util.common.guava.Sequences;
 import org.apache.druid.segment.DimensionHandlerUtils;
@@ -68,9 +57,7 @@ import org.apache.druid.sql.calcite.rel.DruidRel;
 
 import javax.annotation.Nullable;
 import java.io.Closeable;
-import java.util.ArrayList;
 import java.util.Iterator;
-import java.util.List;
 import java.util.Properties;
 
 public class DruidPlanner implements Closeable
@@ -151,10 +138,6 @@ public class DruidPlanner implements Closeable
   /**
    * Plan an SQL query for execution, returning a {@link PlannerResult} which can be used to actually execute the query.
    *
-   * Ideally, the query can be planned into a native Druid query, using
-   * {@link #planWithDruidConvention(SqlExplain, RelRoot)}, but will fall-back to
-   * {@link #planWithBindableConvention(SqlExplain, RelRoot)} if this is not possible.
-   *
    * In some future this could perhaps re-use some of the work done by {@link #validate(String)}
    * instead of repeating it, but that day is not today.
    */
@@ -174,19 +157,7 @@ public class DruidPlanner implements Closeable
     final SqlNode validated = planner.validate(parametized);
     final RelRoot root = planner.rel(validated);
 
-    try {
-      return planWithDruidConvention(explain, root);
-    }
-    catch (RelOptPlanner.CannotPlanException e) {
-      // Try again with BINDABLE convention. Used for querying Values and metadata tables.
-      try {
-        return planWithBindableConvention(explain, root);
-      }
-      catch (Exception e2) {
-        e.addSuppressed(e2);
-        throw e;
-      }
-    }
+    return planWithDruidConvention(explain, root);
   }
 
   public PlannerContext getPlannerContext()
@@ -266,85 +237,6 @@ public class DruidPlanner implements Closeable
         }
       };
 
-      return new PlannerResult(resultsSupplier, root.validatedRowType);
-    }
-  }
-
-  /**
-   * Construct a {@link PlannerResult} for a fall-back 'bindable' rel, for things that are not directly translatable
-   * to native Druid queries such as system tables and just a general purpose (but definitely not optimized) fall-back.
-   *
-   * See {@link #planWithDruidConvention(SqlExplain, RelRoot)} which will handle things which are directly translatable
-   * to native Druid queries.
-   */
-  private PlannerResult planWithBindableConvention(
-      final SqlExplain explain,
-      final RelRoot root
-  ) throws RelConversionException
-  {
-    BindableRel bindableRel = (BindableRel) planner.transform(
-        Rules.BINDABLE_CONVENTION_RULES,
-        planner.getEmptyTraitSet().replace(BindableConvention.INSTANCE).plus(root.collation),
-        root.rel
-    );
-
-    if (!root.isRefTrivial()) {
-      // Add a projection on top to accommodate root.fields.
-      final List<RexNode> projects = new ArrayList<>();
-      final RexBuilder rexBuilder = bindableRel.getCluster().getRexBuilder();
-      for (int field : Pair.left(root.fields)) {
-        projects.add(rexBuilder.makeInputRef(bindableRel, field));
-      }
-      bindableRel = new Bindables.BindableProject(
-          bindableRel.getCluster(),
-          bindableRel.getTraitSet(),
-          bindableRel,
-          projects,
-          root.validatedRowType
-      );
-    }
-
-    if (explain != null) {
-      return planExplanation(bindableRel, explain);
-    } else {
-      final BindableRel theRel = bindableRel;
-      final DataContext dataContext = plannerContext.createDataContext(
-          (JavaTypeFactory) planner.getTypeFactory(),
-          plannerContext.getParameters()
-      );
-      final Supplier<Sequence<Object[]>> resultsSupplier = () -> {
-        final Enumerable<?> enumerable = theRel.bind(dataContext);
-        final Enumerator<?> enumerator = enumerable.enumerator();
-        return Sequences.withBaggage(new BaseSequence<>(
-            new BaseSequence.IteratorMaker<Object[], EnumeratorIterator<Object[]>>()
-            {
-              @Override
-              public EnumeratorIterator<Object[]> make()
-              {
-                return new EnumeratorIterator<>(new Iterator<Object[]>()
-                {
-                  @Override
-                  public boolean hasNext()
-                  {
-                    return enumerator.moveNext();
-                  }
-
-                  @Override
-                  public Object[] next()
-                  {
-                    return (Object[]) enumerator.current();
-                  }
-                });
-              }
-
-              @Override
-              public void cleanup(EnumeratorIterator<Object[]> iterFromMake)
-              {
-
-              }
-            }
-        ), enumerator::close);
-      };
       return new PlannerResult(resultsSupplier, root.validatedRowType);
     }
   }

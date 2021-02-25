@@ -17,46 +17,39 @@
  * under the License.
  */
 
-package org.apache.druid.query;
+package org.apache.druid.sql.calcite.schema;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonTypeName;
-import com.google.common.base.Preconditions;
 import org.apache.druid.java.util.common.IAE;
+import org.apache.druid.query.DataSource;
+import org.apache.druid.query.InlineDataSource;
+import org.apache.druid.segment.column.RowSignature;
 
 import java.util.Collections;
 import java.util.List;
-import java.util.Objects;
 import java.util.Set;
 
-@JsonTypeName("table")
-public class TableDataSource implements DataSource
+@JsonTypeName("virtual")
+public class VirtualDataSource implements DataSource
 {
-  private final String name;
+  private final InlineDataSource inlineDataSource;
 
-  @JsonCreator
-  public TableDataSource(@JsonProperty("name") String name)
+  public VirtualDataSource(final Iterable<Object[]> rows, final RowSignature signature)
   {
-    this.name = Preconditions.checkNotNull(name, "'name' must be nonnull");
+    this.inlineDataSource = InlineDataSource.fromIterable(rows, signature);
   }
 
   @JsonCreator
-  public static TableDataSource create(final String name)
+  private static VirtualDataSource noDeserialization()
   {
-    return new TableDataSource(name);
-  }
-
-  @JsonProperty
-  public String getName()
-  {
-    return name;
+    throw new UnsupportedOperationException();
   }
 
   @Override
   public Set<String> getTableNames()
   {
-    return Collections.singleton(name);
+    return Collections.emptySet();
   }
 
   @Override
@@ -68,17 +61,11 @@ public class TableDataSource implements DataSource
   @Override
   public DataSource withChildren(List<DataSource> children)
   {
-    if (!children.isEmpty()) {
-      throw new IAE("Cannot accept children");
+    if (children.isEmpty()) {
+      return this;
     }
 
-    return this;
-  }
-
-  @Override
-  public boolean isCacheable(boolean isBroker)
-  {
-    return true;
+    throw new IAE("Cannot accept children");
   }
 
   @Override
@@ -90,7 +77,7 @@ public class TableDataSource implements DataSource
   @Override
   public boolean isOnBroker()
   {
-    return false;
+    return true;
   }
 
   @Override
@@ -100,27 +87,19 @@ public class TableDataSource implements DataSource
   }
 
   @Override
+  public boolean isCacheable(boolean isBroker)
+  {
+    return false;
+  }
+
+  public InlineDataSource getInlineDataSource()
+  {
+    return inlineDataSource;
+  }
+
+  @Override
   public String toString()
   {
-    return name;
-  }
-
-  @Override
-  public boolean equals(Object o)
-  {
-    if (this == o) {
-      return true;
-    }
-    if (o == null || getClass() != o.getClass()) {
-      return false;
-    }
-    TableDataSource that = (TableDataSource) o;
-    return name.equals(that.name);
-  }
-
-  @Override
-  public int hashCode()
-  {
-    return Objects.hash(name);
+    return "[virtual]";
   }
 }

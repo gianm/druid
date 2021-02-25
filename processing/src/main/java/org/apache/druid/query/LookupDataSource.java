@@ -91,6 +91,12 @@ public class LookupDataSource implements DataSource
   }
 
   @Override
+  public boolean isOnBroker()
+  {
+    return true;
+  }
+
+  @Override
   public boolean isConcrete()
   {
     return true;

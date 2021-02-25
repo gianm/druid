@@ -229,10 +229,10 @@ public class ClientQuerySegmentWalker implements QuerySegmentWalker
     final QueryToolChest<T, Query<T>> toolChest = warehouse.getToolChest(query);
 
     // 1) Must be based on a concrete datasource that is not a table.
-    // 2) Must be based on globally available data (so we have a copy here on the Broker).
+    // 2) Must be based on data available on the Broker.
     // 3) If there is an outer query, it must be handleable by the query toolchest (the local walker does not handle
     //    subqueries on its own).
-    return analysis.isConcreteBased() && !analysis.isConcreteTableBased() && analysis.isGlobal()
+    return analysis.isConcreteBased() && !analysis.isConcreteTableBased() && analysis.isOnBroker()
            && (!analysis.isQuery()
                || toolChest.canPerformSubquery(((QueryDataSource) analysis.getDataSource()).getQuery()));
   }

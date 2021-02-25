@@ -24,6 +24,7 @@ import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Iterators;
 import com.google.common.collect.Sets;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.inject.Guice;
@@ -123,6 +124,7 @@ import org.apache.druid.sql.calcite.view.DruidViewMacroFactory;
 import org.apache.druid.sql.calcite.view.NoopViewManager;
 import org.apache.druid.sql.calcite.view.ViewManager;
 import org.apache.druid.timeline.DataSegment;
+import org.apache.druid.timeline.SegmentWithOvershadowedStatus;
 import org.apache.druid.timeline.partition.LinearShardSpec;
 import org.easymock.EasyMock;
 import org.joda.time.DateTime;
@@ -137,6 +139,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -1050,7 +1053,15 @@ public class CalciteTests
             getJsonMapper(),
             new BrokerSegmentWatcherConfig(),
             plannerConfig
-        ),
+        )
+        {
+          @Override
+          public Iterator<SegmentWithOvershadowedStatus> getPublishedSegments()
+          {
+            // TODO(gianm): Put some actual stuff here for SystemSchemaQueryTest
+            return Iterators.emptyIterator();
+          }
+        },
         new TestServerInventoryView(walker.getSegments()),
         new FakeServerInventoryView(),
         authorizerMapper,

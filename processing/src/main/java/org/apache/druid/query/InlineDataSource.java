@@ -53,7 +53,7 @@ public class InlineDataSource implements DataSource
   private final Iterable<Object[]> rows;
   private final RowSignature signature;
 
-  private InlineDataSource(
+  protected InlineDataSource(
       final Iterable<Object[]> rows,
       final RowSignature signature
   )
@@ -175,6 +175,12 @@ public class InlineDataSource implements DataSource
 
   @Override
   public boolean isGlobal()
+  {
+    return true;
+  }
+
+  @Override
+  public boolean isOnBroker()
   {
     return true;
   }

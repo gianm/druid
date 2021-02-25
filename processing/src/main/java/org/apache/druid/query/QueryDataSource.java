@@ -83,6 +83,12 @@ public class QueryDataSource implements DataSource
   }
 
   @Override
+  public boolean isOnBroker()
+  {
+    return query.getDataSource().isOnBroker();
+  }
+
+  @Override
   public boolean isConcrete()
   {
     return false;

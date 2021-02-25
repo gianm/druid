@@ -246,6 +246,15 @@ public class DataSourceAnalysis
   }
 
   /**
+   * Returns true if the Broker has the ability to compute this datasource on its own, without contacting
+   * data servers.
+   */
+  public boolean isOnBroker()
+  {
+    return dataSource.isOnBroker();
+  }
+
+  /**
    * Returns true if this datasource can be computed by the core Druid query stack via a scan of a concrete base
    * datasource. All other datasources involved, if any, must be global.
    */

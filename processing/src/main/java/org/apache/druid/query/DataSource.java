@@ -80,6 +80,11 @@ public interface DataSource
   boolean isGlobal();
 
   /**
+   * TODO(gianm): Javadocs
+   */
+  boolean isOnBroker();
+
+  /**
    * Returns true if this datasource represents concrete data that can be scanned via a
    * {@link org.apache.druid.segment.Segment} adapter of some kind. True for e.g. 'table' but not for 'query' or 'join'.
    *

@@ -187,6 +187,12 @@ public class JoinDataSource implements DataSource
   }
 
   @Override
+  public boolean isOnBroker()
+  {
+    return left.isOnBroker() && right.isOnBroker();
+  }
+
+  @Override
   public boolean isConcrete()
   {
     return false;

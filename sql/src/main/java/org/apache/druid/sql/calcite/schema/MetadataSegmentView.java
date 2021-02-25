@@ -154,7 +154,7 @@ public class MetadataSegmentView
     cachePopulated.countDown();
   }
 
-  Iterator<SegmentWithOvershadowedStatus> getPublishedSegments()
+  public Iterator<SegmentWithOvershadowedStatus> getPublishedSegments()
   {
     if (isCacheEnabled) {
       Uninterruptibles.awaitUninterruptibly(cachePopulated);

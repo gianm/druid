@@ -45,6 +45,7 @@ import org.apache.druid.server.ClientQuerySegmentWalker;
 import org.apache.druid.server.QueryScheduler;
 import org.apache.druid.server.QueryStackTests;
 import org.apache.druid.server.initialization.ServerConfig;
+import org.apache.druid.sql.calcite.schema.VirtualDataSource;
 import org.apache.druid.timeline.DataSegment;
 import org.apache.druid.timeline.VersionedIntervalTimeline;
 import org.joda.time.Interval;
@@ -105,6 +106,14 @@ public class SpecificSegmentsQuerySegmentWalker implements QuerySegmentWalker, C
             new MapSegmentWrangler(
                 ImmutableMap.<Class<? extends DataSource>, SegmentWrangler>builder()
                     .put(InlineDataSource.class, new InlineSegmentWrangler())
+                    .put(
+                        VirtualDataSource.class,
+                        (dataSource, intervals) ->
+                            new InlineSegmentWrangler().getSegmentsForIntervals(
+                                ((VirtualDataSource) dataSource).getInlineDataSource(),
+                                intervals
+                            )
+                    )
                     .put(LookupDataSource.class, new LookupSegmentWrangler(lookupProvider))
                     .build()
             ),

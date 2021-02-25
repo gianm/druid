@@ -17,57 +17,9 @@
  * under the License.
  */
 
-package org.apache.druid.segment.join;
+package org.apache.druid.sql.calcite.schema;
 
-import org.apache.druid.query.DataSource;
-
-import java.util.List;
-import java.util.Set;
-
-/**
- * A datasource that returns nothing. Only used to test un-registered datasources.
- */
-public class NoopDataSource implements DataSource
+public interface SegmentsTableRow
 {
-  @Override
-  public Set<String> getTableNames()
-  {
-    return null;
-  }
 
-  @Override
-  public List<DataSource> getChildren()
-  {
-    return null;
-  }
-
-  @Override
-  public DataSource withChildren(List<DataSource> children)
-  {
-    return null;
-  }
-
-  @Override
-  public boolean isCacheable(boolean isBroker)
-  {
-    return false;
-  }
-
-  @Override
-  public boolean isGlobal()
-  {
-    return false;
-  }
-
-  @Override
-  public boolean isOnBroker()
-  {
-    return false;
-  }
-
-  @Override
-  public boolean isConcrete()
-  {
-    return false;
-  }
 }
