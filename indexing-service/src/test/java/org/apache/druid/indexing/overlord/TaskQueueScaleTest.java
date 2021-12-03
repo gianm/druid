@@ -38,7 +38,6 @@ import org.apache.druid.indexing.overlord.autoscaling.ScalingStats;
 import org.apache.druid.indexing.overlord.config.DefaultTaskConfig;
 import org.apache.druid.indexing.overlord.config.TaskLockConfig;
 import org.apache.druid.indexing.overlord.config.TaskQueueConfig;
-import org.apache.druid.java.util.common.ISE;
 import org.apache.druid.java.util.common.Pair;
 import org.apache.druid.java.util.common.concurrent.ScheduledExecutors;
 import org.apache.druid.java.util.common.io.Closer;
@@ -51,6 +50,7 @@ import org.apache.druid.server.metrics.NoopServiceEmitter;
 import org.joda.time.Duration;
 import org.joda.time.Period;
 import org.junit.After;
+import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -63,6 +63,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
@@ -83,6 +85,8 @@ public class TaskQueueScaleTest
   private TaskStorage taskStorage;
   private TestTaskRunner taskRunner;
   private Closer closer;
+
+  private ExecutorService fakeClients;
 
   @Before
   public void setUp() throws Exception
@@ -126,33 +130,49 @@ public class TaskQueueScaleTest
 
     taskQueue.start();
     closer.register(taskQueue::stop);
+
+    if (fakeClients != null) {
+      throw new RuntimeException("fake clients was not null");
+    }
+
+    fakeClients = Executors.newFixedThreadPool(64);
   }
 
   @After
   public void tearDown() throws Exception
   {
+    fakeClients.shutdownNow();
+    fakeClients = null;
     closer.close();
   }
 
   @Test(timeout = 60_000L) // more than enough time if the task queue is efficient
   public void doMassLaunchAndExit() throws Exception
   {
+    Assert.assertEquals("no tasks should be running", 0, taskRunner.getKnownTasks().size());
+
     // Add all tasks.
     for (int i = 0; i < numTasks; i++) {
       final TestTask testTask = new TestTask(i, 2000L /* runtime millis */);
-      taskQueue.add(testTask);
+      fakeClients.submit(() -> taskQueue.add(testTask));
     }
 
     // Wait for all tasks to finish.
-    while (taskStorage.getRecentlyCreatedAlreadyFinishedTaskInfo(numTasks, Duration.standardHours(1), DATASOURCE).size()
-           < numTasks) {
+    while (taskStorage.getRecentlyCreatedAlreadyFinishedTaskInfo(
+        numTasks,
+        Duration.standardHours(1),
+        DATASOURCE).size() < numTasks) {
       Thread.sleep(100);
     }
+
+    Assert.assertEquals("no tasks should be running", 0, taskStorage.getActiveTasks().size());
   }
 
   @Test(timeout = 60_000L) // more than enough time if the task queue is efficient
   public void doMassLaunchAndShutdown() throws Exception
   {
+    Assert.assertEquals("no tasks should be running", 0, taskRunner.getKnownTasks().size());
+
     // Add all tasks.
     final List<String> taskIds = new ArrayList<>();
     for (int i = 0; i < numTasks; i++) {
@@ -160,20 +180,33 @@ public class TaskQueueScaleTest
           i,
           Duration.standardHours(1).getMillis() /* very long runtime millis, so we can do a shutdown */
       );
-      taskQueue.add(testTask);
+      fakeClients.submit(() -> taskQueue.add(testTask));
       taskIds.add(testTask.getId());
     }
 
+    // wait for all tasks to progress to running state
+    while (taskStorage.getActiveTasks().size() < numTasks) {
+      Thread.sleep(100);
+    }
+    Assert.assertEquals("all tasks should be running", numTasks, taskStorage.getActiveTasks().size());
+
     // Shut down all tasks.
     for (final String taskId : taskIds) {
-      taskQueue.shutdown(taskId, "test shutdown");
+      fakeClients.submit(() -> taskQueue.shutdown(taskId, "test shutdown"));
     }
 
     // Wait for all tasks to finish.
-    while (taskStorage.getRecentlyCreatedAlreadyFinishedTaskInfo(numTasks, Duration.standardHours(1), DATASOURCE).size()
-           < numTasks) {
+    while (!taskStorage.getActiveTasks().isEmpty()) {
       Thread.sleep(100);
     }
+
+    Assert.assertEquals("no tasks should be running", 0, taskStorage.getActiveTasks().size());
+
+    int completed = taskStorage.getRecentlyCreatedAlreadyFinishedTaskInfo(
+        numTasks,
+        Duration.standardHours(1),
+        DATASOURCE).size();
+    Assert.assertEquals("all tasks should have completed", numTasks, completed);
   }
 
   private static class TestTask extends NoopTask
@@ -203,12 +236,13 @@ public class TaskQueueScaleTest
   {
     private static final Logger log = new Logger(TestTaskRunner.class);
     private static final Duration T_PENDING_TO_RUNNING = Duration.standardSeconds(2);
-    private static final Duration T_SHUTDOWN = Duration.standardSeconds(2);
+    private static final Duration T_SHUTDOWN_ACK = Duration.millis(8);
+    private static final Duration T_SHUTDOWN_COMPLETE = Duration.standardSeconds(2);
 
     @GuardedBy("knownTasks")
     private final Map<String, TestTaskRunnerWorkItem> knownTasks = new HashMap<>();
 
-    private final ScheduledExecutorService exec = ScheduledExecutors.fixed(1, "TaskQueueScaleTest-%s");
+    private final ScheduledExecutorService exec = ScheduledExecutors.fixed(8, "TaskQueueScaleTest-%s");
 
     @Override
     public void start()
@@ -238,7 +272,7 @@ public class TaskQueueScaleTest
                       try {
                         final TestTaskRunnerWorkItem item2;
                         synchronized (knownTasks) {
-                          item2 = knownTasks.remove(task.getId());
+                          item2 = knownTasks.get(task.getId());
                         }
                         if (item2 != null) {
                           item2.setResult(TaskStatus.success(task.getId()));
@@ -274,8 +308,23 @@ public class TaskQueueScaleTest
         }
       }
 
+      threadSleep(T_SHUTDOWN_ACK);
+
+      TestTaskRunnerWorkItem existingTask = knownTasks.get(taskid);
+      if (!existingTask.getResult().isDone()) {
+        exec.schedule(() -> {
+          existingTask.setResult(TaskStatus.failure("taskId", "stopped"));
+          synchronized (knownTasks) {
+            knownTasks.remove(taskid);
+          }
+        }, T_SHUTDOWN_COMPLETE.getMillis(), TimeUnit.MILLISECONDS);
+      }
+    }
+
+    static void threadSleep(Duration duration)
+    {
       try {
-        Thread.sleep(T_SHUTDOWN.getMillis());
+        Thread.sleep(duration.getMillis());
       }
       catch (InterruptedException e) {
         Thread.currentThread().interrupt();
@@ -420,11 +469,10 @@ public class TaskQueueScaleTest
 
     public void setResult(final TaskStatus result)
     {
-      final boolean wasSet = ((SettableFuture<TaskStatus>) getResult()).set(result);
+      ((SettableFuture<TaskStatus>) getResult()).set(result);
 
-      if (!wasSet) {
-        throw new ISE("Already set?");
-      }
+      // possibly a parallel shutdown request was issued during the
+      // shutdown time; ignore it
     }
 
     public TestTaskRunnerWorkItem withState(final RunnerTaskState newState)
