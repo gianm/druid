@@ -750,41 +750,65 @@ public class TaskQueue
 
   public Map<String, Long> getRunningTaskCount()
   {
-    Map<String, String> taskDatasources = tasks.stream().collect(Collectors.toMap(Task::getId, Task::getDataSource));
-    return taskRunner.getRunningTasks()
-                     .stream()
-                     .collect(Collectors.toMap(
-                         e -> taskDatasources.getOrDefault(e.getTaskId(), ""),
-                         e -> 1L,
-                         Long::sum
-                     ));
+    giant.lock();
+    try {
+      Map<String, String> taskDatasources = tasks.stream().collect(Collectors.toMap(Task::getId, Task::getDataSource));
+      return taskRunner.getRunningTasks()
+                       .stream()
+                       .collect(Collectors.toMap(
+                           e -> taskDatasources.getOrDefault(e.getTaskId(), ""),
+                           e -> 1L,
+                           Long::sum
+                       ));
+    }
+    finally {
+      giant.unlock();
+    }
   }
 
   public Map<String, Long> getPendingTaskCount()
   {
-    Map<String, String> taskDatasources = tasks.stream().collect(Collectors.toMap(Task::getId, Task::getDataSource));
-    return taskRunner.getPendingTasks()
-                     .stream()
-                     .collect(Collectors.toMap(
-                         e -> taskDatasources.getOrDefault(e.getTaskId(), ""),
-                         e -> 1L,
-                         Long::sum
-                     ));
+    giant.lock();
+    try {
+      Map<String, String> taskDatasources = tasks.stream().collect(Collectors.toMap(Task::getId, Task::getDataSource));
+      return taskRunner.getPendingTasks()
+                      .stream()
+                      .collect(Collectors.toMap(
+                          e -> taskDatasources.getOrDefault(e.getTaskId(), ""),
+                          e -> 1L,
+                          Long::sum
+                      ));
+    }
+    finally {
+      giant.unlock();
+    }
   }
 
   public Map<String, Long> getWaitingTaskCount()
   {
-    Set<String> runnerKnownTaskIds = taskRunner.getKnownTasks()
-                                               .stream()
-                                               .map(TaskRunnerWorkItem::getTaskId)
-                                               .collect(Collectors.toSet());
-    return tasks.stream().filter(task -> !runnerKnownTaskIds.contains(task.getId()))
-                .collect(Collectors.toMap(Task::getDataSource, task -> 1L, Long::sum));
+    giant.lock();
+    try {
+      Set<String> runnerKnownTaskIds = taskRunner.getKnownTasks()
+                                                .stream()
+                                                .map(TaskRunnerWorkItem::getTaskId)
+                                                .collect(Collectors.toSet());
+      return tasks.stream().filter(task -> !runnerKnownTaskIds.contains(task.getId()))
+                  .collect(Collectors.toMap(Task::getDataSource, task -> 1L, Long::sum));
+    }
+    finally {
+      giant.unlock();
+    }
   }
 
   @VisibleForTesting
   List<Task> getTasks()
   {
-    return tasks;
+    giant.lock();
+    try {
+      return new ArrayList<>(tasks);
+    }
+    finally {
+      giant.unlock();
+    }
   }
 }
