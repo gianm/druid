@@ -63,8 +63,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executor;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
@@ -85,8 +83,6 @@ public class TaskQueueScaleTest
   private TaskStorage taskStorage;
   private TestTaskRunner taskRunner;
   private Closer closer;
-
-  private ExecutorService fakeClients;
 
   @Before
   public void setUp() throws Exception
@@ -130,19 +126,11 @@ public class TaskQueueScaleTest
 
     taskQueue.start();
     closer.register(taskQueue::stop);
-
-    if (fakeClients != null) {
-      throw new RuntimeException("fake clients was not null");
-    }
-
-    fakeClients = Executors.newFixedThreadPool(64);
   }
 
   @After
   public void tearDown() throws Exception
   {
-    fakeClients.shutdownNow();
-    fakeClients = null;
     closer.close();
   }
 
@@ -154,7 +142,7 @@ public class TaskQueueScaleTest
     // Add all tasks.
     for (int i = 0; i < numTasks; i++) {
       final TestTask testTask = new TestTask(i, 2000L /* runtime millis */);
-      fakeClients.submit(() -> taskQueue.add(testTask));
+      taskQueue.add(testTask);
     }
 
     // Wait for all tasks to finish.
@@ -180,7 +168,7 @@ public class TaskQueueScaleTest
           i,
           Duration.standardHours(1).getMillis() /* very long runtime millis, so we can do a shutdown */
       );
-      fakeClients.submit(() -> taskQueue.add(testTask));
+      taskQueue.add(testTask);
       taskIds.add(testTask.getId());
     }
 
@@ -192,7 +180,7 @@ public class TaskQueueScaleTest
 
     // Shut down all tasks.
     for (final String taskId : taskIds) {
-      fakeClients.submit(() -> taskQueue.shutdown(taskId, "test shutdown"));
+      taskQueue.shutdown(taskId, "test shutdown");
     }
 
     // Wait for all tasks to finish.
