@@ -14723,4 +14723,88 @@ public class CalciteQueryTest extends BaseCalciteQueryTest
         )
     );
   }
+
+  @Test
+  public void testMultipleExactCountDistinctWithFilter()
+  {
+    skipVectorize();
+    cannotVectorize();
+    requireMergeBuffers(3);
+    testQuery(
+        PLANNER_CONFIG_NO_HLL.withOverrides(
+            ImmutableMap.of(
+                PlannerConfig.CTX_KEY_USE_GROUPING_SET_FOR_EXACT_DISTINCT,
+                "true"
+            )
+        ),
+        "SELECT COUNT(*) as numRows, "
+        + " COUNT(DISTINCT dim2) filter(where dim1='abc') as Distinct2"
+        + " FROM druid.foo",
+        CalciteTests.REGULAR_USER_AUTH_RESULT,
+        ImmutableList.of(
+            GroupByQuery.builder()
+                        .setDataSource(
+                            new QueryDataSource(
+                                GroupByQuery.builder()
+                                            .setDataSource(CalciteTests.DATASOURCE1)
+                                            .setInterval(querySegmentSpec(Filtration.eternity()))
+                                            .setGranularity(Granularities.ALL)
+                                            .setVirtualColumns(
+                                                expressionVirtualColumn(
+                                                    "v0",
+                                                    "((\"dim1\" == 'abc') > 0)",
+                                                    ColumnType.LONG
+                                                )
+                                            )
+                                            .setDimensions(
+                                                dimensions(
+                                                    new DefaultDimensionSpec("dim2", "d0", ColumnType.STRING),
+                                                    new DefaultDimensionSpec("v0", "d1", ColumnType.LONG)
+                                                )
+                                            )
+                                            .setAggregatorSpecs(
+                                                aggregators(
+                                                    new CountAggregatorFactory("a0"),
+                                                    new GroupingAggregatorFactory(
+                                                        "a1",
+                                                        Arrays.asList("dim2", "v0")
+                                                    )
+                                                )
+                                            )
+                                            .setSubtotalsSpec(
+                                                ImmutableList.of(
+                                                    ImmutableList.of("d0", "d1"),
+                                                    ImmutableList.of()
+                                                )
+                                            )
+                                            .setContext(QUERY_CONTEXT_DEFAULT)
+                                            .build()
+                            )
+                        )
+                        .setInterval(querySegmentSpec(Filtration.eternity()))
+                        .setGranularity(Granularities.ALL)
+                        .setAggregatorSpecs(
+                            aggregators(
+                                new FilteredAggregatorFactory(
+                                    new LongMinAggregatorFactory("_a0", "a0"),
+                                    selector("a1", "3", null)
+                                ),
+                                new FilteredAggregatorFactory(
+                                    new CountAggregatorFactory("_a1"),
+                                    and(
+                                        not(selector("d0", null, null)),
+                                        selector("a1", "0", null),
+                                        expressionFilter("\"d1\"")
+                                    )
+                                )
+                            )
+                        )
+                        .setContext(QUERY_CONTEXT_DEFAULT)
+                        .build()
+        ),
+        ImmutableList.of(
+            new Object[]{6L, 0L}
+        )
+    );
+  }
 }
