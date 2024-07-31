@@ -886,8 +886,8 @@ public class GroupingEngine
       return -1;
     }
 
-    // Choose array-based aggregation if the grouping key is a single string dimension of a known cardinality
-    if (Types.is(columnCapabilities, ValueType.STRING) && cardinality > 0) {
+    // Choose array-based aggregation if the grouping key is empty or a single string dimension of a known cardinality
+    if ((dimensions.isEmpty() || Types.is(columnCapabilities, ValueType.STRING)) && cardinality > 0) {
       final AggregatorFactory[] aggregatorFactories = query.getAggregatorSpecs().toArray(new AggregatorFactory[0]);
       final long requiredBufferCapacity = BufferArrayGrouper.requiredBufferCapacity(
           cardinality,
