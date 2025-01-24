@@ -17,41 +17,42 @@
  * under the License.
  */
 
-package org.apache.druid.segment;
+package org.apache.druid.segment.map;
 
+import it.unimi.dsi.fastutil.bytes.ByteArrays;
+import org.apache.druid.query.Query;
 import org.apache.druid.query.filter.DimFilter;
+import org.apache.druid.segment.SegmentReference;
 
-import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
+import java.util.function.Function;
 
-public class FilteredSegment extends WrappedSegmentReference
+public class LeafSegmentMapFunctionFactory implements SegmentMapFunctionFactory
 {
-  @Nullable
-  private final DimFilter filter;
+  private final boolean cache;
 
-  public FilteredSegment(
-      SegmentReference delegate,
-      @Nullable DimFilter filter
-  )
+  public LeafSegmentMapFunctionFactory(final boolean cache)
   {
-    super(delegate);
-    this.filter = filter;
+    this.cache = cache;
   }
 
   @Override
-  public CursorFactory asCursorFactory()
+  public Function<SegmentReference, SegmentReference> makeFunction(@Nullable final Query<?> query)
   {
-    return new FilteredCursorFactory(delegate.asCursorFactory(), filter);
+    return Function.identity();
   }
 
   @Nullable
   @Override
-  public <T> T as(@Nonnull Class<T> clazz)
+  public DimFilter getPruningFilter(@Nullable DimFilter nextFilter)
   {
-    if (TopNOptimizationInspector.class.equals(clazz)) {
-      return (T) new SimpleTopNOptimizationInspector(filter == null);
-    }
-    // TODO(gianm): no
-    return null;
+    return nextFilter;
+  }
+
+  @Nullable
+  @Override
+  public byte[] getCacheKey()
+  {
+    return cache ? ByteArrays.EMPTY_ARRAY : null;
   }
 }

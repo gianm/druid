@@ -48,8 +48,10 @@ import org.apache.druid.msq.input.table.SegmentsInputSlice;
 import org.apache.druid.msq.kernel.FrameContext;
 import org.apache.druid.msq.kernel.ProcessorsAndChannels;
 import org.apache.druid.msq.kernel.StageDefinition;
+import org.apache.druid.msq.querykit.join.CostlySegmentMapFnProcessor;
 import org.apache.druid.query.Query;
 import org.apache.druid.segment.SegmentReference;
+import org.apache.druid.segment.map.SegmentMapFunctionFactory;
 import org.apache.druid.utils.CollectionUtils;
 
 import javax.annotation.Nullable;
@@ -58,7 +60,6 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Queue;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -126,13 +127,21 @@ public abstract class BaseLeafFrameProcessorFactory extends BaseFrameProcessorFa
       final OutputChannel outputChannel = outputChannelFactory.openChannel(0 /* Partition number doesn't matter */);
       outputChannels.add(outputChannel);
       channelQueue.add(outputChannel.getWritableChannel());
-      frameWriterFactoryQueue.add(stageDefinition.createFrameWriterFactory(outputChannel.getFrameMemoryAllocator(), removeNullBytes));
+      frameWriterFactoryQueue.add(stageDefinition.createFrameWriterFactory(
+          outputChannel.getFrameMemoryAllocator(),
+          removeNullBytes
+      ));
     }
 
 
-    // SegmentMapFn processor, if needed. May be null.
+    // Processor to compute the segment mapping function, if needed. This is used when computing the segment mapping
+    // function is costly. (For cheap ones, segmentMapFnProcessor is null, and we'll build the segment mapping function
+    // inline later in this method.)
+    final SegmentMapFunctionFactory segmentMapFunctionFactory = query.getDataSource().getSegmentMapFunctionFactory();
     final FrameProcessor<Function<SegmentReference, SegmentReference>> segmentMapFnProcessor =
         makeSegmentMapFnProcessor(
+            query,
+            segmentMapFunctionFactory,
             stageDefinition,
             inputSlices,
             inputSliceReader,
@@ -141,10 +150,14 @@ public abstract class BaseLeafFrameProcessorFactory extends BaseFrameProcessorFa
             warningPublisher
         );
 
-    // Function to generate a processor manger for the regular processors, which run after the segmentMapFnProcessor.
+    // Function to generate a processor manger for the regular processors, which run once the segment mapping function
+    // is available.
     final Function<List<Function<SegmentReference, SegmentReference>>, ProcessorManager<Object, Long>> processorManagerFn = segmentMapFnList -> {
       final Function<SegmentReference, SegmentReference> segmentMapFunction =
-          CollectionUtils.getOnlyElement(segmentMapFnList, throwable -> DruidException.defensive("Only one segment map function expected"));
+          CollectionUtils.getOnlyElement(
+              segmentMapFnList,
+              throwable -> DruidException.defensive("Only one segment map function expected")
+          );
       return createBaseLeafProcessorManagerWithHandoff(
           stageDefinition,
           inputSlices,
@@ -162,11 +175,16 @@ public abstract class BaseLeafFrameProcessorFactory extends BaseFrameProcessorFa
     final ProcessorManager processorManager;
 
     if (segmentMapFnProcessor == null) {
+      // Compute segment mapping function inline.
       final Function<SegmentReference, SegmentReference> segmentMapFn =
-          query.getDataSource().createSegmentMapFunction(query, new AtomicLong());
+          query.getDataSource().getSegmentMapFunctionFactory().makeFunction(query);
       processorManager = processorManagerFn.apply(ImmutableList.of(segmentMapFn));
     } else {
-      processorManager = new ChainedProcessorManager<>(ProcessorManagers.of(() -> segmentMapFnProcessor), processorManagerFn);
+      // Compute segment mapping function in a dedicated processor.
+      processorManager = new ChainedProcessorManager<>(
+          ProcessorManagers.of(() -> segmentMapFnProcessor),
+          processorManagerFn
+      );
     }
 
     //noinspection unchecked,rawtypes
@@ -319,7 +337,9 @@ public abstract class BaseLeafFrameProcessorFactory extends BaseFrameProcessorFa
    * processors being run. Returns null if a dedicated segmentMapFn processor is unnecessary.
    */
   @Nullable
-  private FrameProcessor<Function<SegmentReference, SegmentReference>> makeSegmentMapFnProcessor(
+  private static FrameProcessor<Function<SegmentReference, SegmentReference>> makeSegmentMapFnProcessor(
+      Query<?> query,
+      SegmentMapFunctionFactory segmentMapFunctionFactory,
       StageDefinition stageDefinition,
       List<InputSlice> inputSlices,
       InputSliceReader inputSliceReader,
@@ -339,21 +359,16 @@ public abstract class BaseLeafFrameProcessorFactory extends BaseFrameProcessorFa
             warningPublisher
         );
 
-    if (broadcastInputs.isEmpty()) {
-      if (query.getDataSource().getAnalysis().isJoin()) {
-        // Joins may require significant computation to compute the segmentMapFn. Offload it to a processor.
-        return new SimpleSegmentMapFnProcessor(query);
-      } else {
-        // Non-joins are expected to have cheap-to-compute segmentMapFn. Do the computation in the factory thread,
-        // without offloading to a processor.
-        return null;
-      }
-    } else {
-      return BroadcastJoinSegmentMapFnProcessor.create(
+    if (!broadcastInputs.isEmpty() || segmentMapFunctionFactory.isMakeMapperCostly()) {
+      // Segment mapping function is expected to be costly to create. Offload it to a processor.
+      return CostlySegmentMapFnProcessor.create(
           query,
           broadcastInputs,
           frameContext.memoryParameters().getBroadcastBufferMemory()
       );
+    } else {
+      // Non-costly SegmentMapFn. Do the computation in the factory thread, without offloading to a processor.
+      return null;
     }
   }
 

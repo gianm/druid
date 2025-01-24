@@ -56,6 +56,7 @@ public class HashJoinSegment implements SegmentReference
   @Nullable
   private final Filter baseFilter;
   private final List<JoinableClause> clauses;
+  @Nullable
   private final JoinFilterPreAnalysis joinFilterPreAnalysis;
 
   /**
@@ -68,7 +69,7 @@ public class HashJoinSegment implements SegmentReference
       SegmentReference baseSegment,
       @Nullable Filter baseFilter,
       List<JoinableClause> clauses,
-      JoinFilterPreAnalysis joinFilterPreAnalysis
+      @Nullable JoinFilterPreAnalysis joinFilterPreAnalysis
   )
   {
     this.baseSegment = baseSegment;
@@ -132,7 +133,8 @@ public class HashJoinSegment implements SegmentReference
           )
       );
     } else {
-      return SegmentReference.super.as(clazz);
+      // TODO(gianm): no
+      return null;
     }
   }
 

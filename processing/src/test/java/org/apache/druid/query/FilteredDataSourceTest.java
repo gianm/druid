@@ -91,9 +91,9 @@ public class FilteredDataSourceTest
   }
 
   @Test
-  public void test_withUpdatedDataSource()
+  public void test_withBaseDataSource()
   {
-    FilteredDataSource newFilteredDataSource = (FilteredDataSource) filteredFooDataSource.withUpdatedDataSource(
+    FilteredDataSource newFilteredDataSource = (FilteredDataSource) filteredFooDataSource.withBaseDataSource(
         new TableDataSource("bar"));
     Assert.assertTrue(newFilteredDataSource.getBase().equals(barDataSource));
   }

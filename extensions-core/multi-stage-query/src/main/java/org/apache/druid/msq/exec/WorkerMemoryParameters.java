@@ -38,7 +38,7 @@ import org.apache.druid.msq.kernel.GlobalSortMaxCountShuffleSpec;
 import org.apache.druid.msq.kernel.ShuffleSpec;
 import org.apache.druid.msq.kernel.StageDefinition;
 import org.apache.druid.msq.kernel.WorkOrder;
-import org.apache.druid.msq.querykit.BroadcastJoinSegmentMapFnProcessor;
+import org.apache.druid.msq.querykit.join.CostlySegmentMapFnProcessor;
 import org.apache.druid.msq.statistics.ClusterByStatisticsCollectorImpl;
 import org.apache.druid.segment.incremental.IncrementalIndex;
 
@@ -106,7 +106,7 @@ public class WorkerMemoryParameters
 
   /**
    * Fraction of each bundle's total memory that can be used to buffer broadcast inputs. This is used by
-   * {@link BroadcastJoinSegmentMapFnProcessor} to limit how much joinable data is stored on-heap. This is carved
+   * {@link CostlySegmentMapFnProcessor} to limit how much joinable data is stored on-heap. This is carved
    * directly out of the total bundle memory, which makes its size more predictable and stable: it only depends on
    * the total JVM memory, the number of tasks per JVM, and the value of maxConcurrentStages for the query. This
    * stability is important, because if the broadcast buffer fills up, the query fails. So any time its size changes,
@@ -116,7 +116,7 @@ public class WorkerMemoryParameters
 
   /**
    * Multiplier to apply to {@link #BROADCAST_BUFFER_TOTAL_MEMORY_FRACTION} when determining how much free bundle
-   * memory is left over. This fudge factor exists because {@link BroadcastJoinSegmentMapFnProcessor} applies data
+   * memory is left over. This fudge factor exists because {@link CostlySegmentMapFnProcessor} applies data
    * size limits based on frame size, which we expect to expand somewhat in memory due to indexing structures in
    * {@link org.apache.druid.segment.join.table.FrameBasedIndexedTable}.
    */
@@ -315,7 +315,7 @@ public class WorkerMemoryParameters
 
   /**
    * Memory available for buffering broadcast data. Used to restrict the amount of memory used by
-   * {@link BroadcastJoinSegmentMapFnProcessor}.
+   * {@link CostlySegmentMapFnProcessor}.
    */
   public long getBroadcastBufferMemory()
   {
@@ -413,10 +413,10 @@ public class WorkerMemoryParameters
   }
 
   /**
-   * Compute the memory limit passed to {@link BroadcastJoinSegmentMapFnProcessor} within each worker bundle. This
+   * Compute the memory limit passed to {@link CostlySegmentMapFnProcessor} within each worker bundle. This
    * is somewhat lower than {@link #computeBroadcastBufferMemoryIncludingOverhead}, because we expect some overhead on
    * top of this limit due to indexing structures. This overhead isn't accounted for by the processor
-   * {@link BroadcastJoinSegmentMapFnProcessor} itself.
+   * {@link CostlySegmentMapFnProcessor} itself.
    */
   static long computeBroadcastBufferMemory(final long bundleMemory)
   {
@@ -424,7 +424,7 @@ public class WorkerMemoryParameters
   }
 
   /**
-   * Memory allocated to {@link BroadcastJoinSegmentMapFnProcessor} within each worker bundle, including
+   * Memory allocated to {@link CostlySegmentMapFnProcessor} within each worker bundle, including
    * expected overhead.
    */
   static long computeBroadcastBufferMemoryIncludingOverhead(final long bundleMemory)

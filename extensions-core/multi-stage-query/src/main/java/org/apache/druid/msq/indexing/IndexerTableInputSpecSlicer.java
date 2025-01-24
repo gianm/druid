@@ -178,8 +178,10 @@ public class IndexerTableInputSpecSlicer implements InputSpecSlicer
                         ).iterator();
 
       return DimFilterUtils.filterShards(
-          tableInputSpec.getFilter(),
-          tableInputSpec.getFilterFields(),
+          // TODO(gianm): restore filtering
+//          tableInputSpec.getFilter(),
+//          tableInputSpec.getFilterFields(),
+          null,
           () -> dataSegmentIterator,
           segment -> segment.getSegment().getShardSpec(),
           new HashMap<>()

@@ -22,13 +22,11 @@ package org.apache.druid.query.filter;
 import com.google.common.base.Function;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.RangeSet;
-import org.apache.druid.query.planning.DataSourceAnalysis;
 import org.apache.druid.timeline.partition.ShardSpec;
 
 import javax.annotation.Nullable;
 import java.nio.ByteBuffer;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -101,7 +99,6 @@ public class DimFilterUtils
    * on same dimensions.
    *
    * @param dimFilter           The filter to use
-   * @param filterFields        Set of fields to consider for pruning, or null to consider all fields
    * @param input               The iterable of objects to be filtered
    * @param converter           The function to convert T to ShardSpec that can be filtered by
    * @param dimensionRangeCache The cache of RangeSets of different dimensions for the dimFilter
@@ -111,7 +108,6 @@ public class DimFilterUtils
    */
   public static <T> Set<T> filterShards(
       @Nullable final DimFilter dimFilter,
-      @Nullable final Set<String> filterFields,
       final Iterable<T> input,
       final Function<T, ShardSpec> converter,
       final Map<String, Optional<RangeSet<String>>> dimensionRangeCache
@@ -133,13 +129,11 @@ public class DimFilterUtils
         Map<String, RangeSet<String>> filterDomain = new HashMap<>();
         List<String> dimensions = shard.getDomainDimensions();
         for (String dimension : dimensions) {
-          if (filterFields == null || filterFields.contains(dimension)) {
-            Optional<RangeSet<String>> optFilterRangeSet = dimensionRangeCache
-                .computeIfAbsent(dimension, d -> Optional.ofNullable(dimFilter.getDimensionRangeSet(d)));
+          Optional<RangeSet<String>> optFilterRangeSet = dimensionRangeCache
+              .computeIfAbsent(dimension, d -> Optional.ofNullable(dimFilter.getDimensionRangeSet(d)));
 
-            if (optFilterRangeSet.isPresent()) {
-              filterDomain.put(dimension, optFilterRangeSet.get());
-            }
+          if (optFilterRangeSet.isPresent()) {
+            filterDomain.put(dimension, optFilterRangeSet.get());
           }
         }
         if (!filterDomain.isEmpty() && !shard.possibleInDomain(filterDomain)) {
@@ -152,27 +146,5 @@ public class DimFilterUtils
       }
     }
     return retSet;
-  }
-
-  /**
-   * Returns a copy of "fields" only including base fields from {@link DataSourceAnalysis}.
-   *
-   * @param fields             field list, must be nonnull
-   * @param dataSourceAnalysis analyzed datasource
-   */
-  public static Set<String> onlyBaseFields(
-      final Set<String> fields,
-      final DataSourceAnalysis dataSourceAnalysis
-  )
-  {
-    final Set<String> retVal = new HashSet<>();
-
-    for (final String field : fields) {
-      if (dataSourceAnalysis.isBaseColumn(field)) {
-        retVal.add(field);
-      }
-    }
-
-    return retVal;
   }
 }

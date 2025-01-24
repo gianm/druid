@@ -56,6 +56,7 @@ import org.apache.druid.query.OrderBy;
 import org.apache.druid.query.Query;
 import org.apache.druid.query.QueryDataSource;
 import org.apache.druid.query.TableDataSource;
+import org.apache.druid.query.UnionDataSource;
 import org.apache.druid.query.UnnestDataSource;
 import org.apache.druid.query.aggregation.AggregatorFactory;
 import org.apache.druid.query.aggregation.LongMaxAggregatorFactory;
@@ -76,7 +77,6 @@ import org.apache.druid.query.operator.OperatorFactory;
 import org.apache.druid.query.operator.ScanOperatorFactory;
 import org.apache.druid.query.operator.WindowOperatorQuery;
 import org.apache.druid.query.ordering.StringComparator;
-import org.apache.druid.query.planning.DataSourceAnalysis;
 import org.apache.druid.query.scan.ScanQuery;
 import org.apache.druid.query.spec.LegacySegmentSpec;
 import org.apache.druid.query.timeboundary.TimeBoundaryQuery;
@@ -888,8 +888,9 @@ public class DruidQuery
    */
   private static boolean canUseIntervalFiltering(final DataSource dataSource)
   {
-    final DataSourceAnalysis analysis = dataSource.getAnalysis();
-    return !analysis.getBaseQuery().isPresent() && analysis.isTableBased();
+    final DataSource concreteBase = dataSource.getConcreteBase();
+    return concreteBase instanceof TableDataSource
+        || concreteBase instanceof UnionDataSource && ((UnionDataSource) concreteBase).isTables();
   }
 
   private static Filtration toFiltration(
@@ -924,10 +925,10 @@ public class DruidQuery
       return true;
     }
 
-    if (dataSource.getAnalysis().isConcreteAndTableBased()) {
-      // Always OK: queries on concrete tables (regular Druid datasources) use segment-based cursors
-      // (IncrementalIndex or QueryableIndex). These clip query interval to data interval, making wide query
-      // intervals safer. They do not have special checks for granularity and interval safety.
+    if (dataSource.getConcreteBase() instanceof TableDataSource) {
+      // Always OK: queries on regular Druid datasources use segment-based cursors (IncrementalIndex or QueryableIndex).
+      // These clip query interval to data interval, making wide query intervals safer. They do not have special checks
+      // for granularity and interval safety.
       return true;
     }
 

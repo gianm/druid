@@ -56,9 +56,7 @@ import org.apache.druid.query.TableDataSource;
 import org.apache.druid.query.UnionDataSource;
 import org.apache.druid.query.UnnestDataSource;
 import org.apache.druid.query.filter.DimFilter;
-import org.apache.druid.query.filter.DimFilterUtils;
 import org.apache.druid.query.planning.DataSourceAnalysis;
-import org.apache.druid.query.planning.PreJoinableClause;
 import org.apache.druid.query.spec.MultipleIntervalSegmentSpec;
 import org.apache.druid.query.spec.QuerySegmentSpec;
 import org.apache.druid.segment.column.ColumnHolder;
@@ -220,16 +218,17 @@ public class DataSourcePlan
 
       switch (deducedJoinAlgorithm) {
         case BROADCAST:
-          return forBroadcastHashJoin(
-              queryKitSpec,
-              queryContext,
-              joinDataSource,
-              querySegmentSpec,
-              filter,
-              filterFields,
-              minStageNumber,
-              broadcast
-          );
+          // TODO(gianm): implement broadcast hash-join
+//          return forBroadcastHashJoin(
+//              queryKitSpec,
+//              queryContext,
+//              joinDataSource,
+//              querySegmentSpec,
+//              filter,
+//              filterFields,
+//              minStageNumber,
+//              broadcast
+//          );
 
         case SORT_MERGE:
           return forSortMergeJoin(
@@ -560,71 +559,72 @@ public class DataSourcePlan
 
   /**
    * Build a plan for broadcast hash-join.
+   * TODO(gianm): implement broadcast hash-join
    */
-  private static DataSourcePlan forBroadcastHashJoin(
-      final QueryKitSpec queryKitSpec,
-      final QueryContext queryContext,
-      final JoinDataSource dataSource,
-      final QuerySegmentSpec querySegmentSpec,
-      @Nullable final DimFilter filter,
-      @Nullable final Set<String> filterFields,
-      final int minStageNumber,
-      final boolean broadcast
-  )
-  {
-    final QueryDefinitionBuilder subQueryDefBuilder = QueryDefinition.builder(queryKitSpec.getQueryId());
-    final DataSourceAnalysis analysis = dataSource.getAnalysis();
-
-    final DataSourcePlan basePlan = forDataSource(
-        queryKitSpec,
-        queryContext,
-        analysis.getBaseDataSource(),
-        querySegmentSpec,
-        filter,
-        filter == null ? null : DimFilterUtils.onlyBaseFields(filterFields, analysis),
-        Math.max(minStageNumber, subQueryDefBuilder.getNextStageNumber()),
-        broadcast
-    );
-
-    DataSource newDataSource = basePlan.getNewDataSource();
-    final List<InputSpec> inputSpecs = new ArrayList<>(basePlan.getInputSpecs());
-    final IntSet broadcastInputs = new IntOpenHashSet(basePlan.getBroadcastInputs());
-    basePlan.getSubQueryDefBuilder().ifPresent(subQueryDefBuilder::addAll);
-
-    for (int i = 0; i < analysis.getPreJoinableClauses().size(); i++) {
-      final PreJoinableClause clause = analysis.getPreJoinableClauses().get(i);
-      final DataSourcePlan clausePlan = forDataSource(
-          queryKitSpec,
-          queryContext,
-          clause.getDataSource(),
-          new MultipleIntervalSegmentSpec(Intervals.ONLY_ETERNITY),
-          null, // Don't push down query filters for right-hand side: needs some work to ensure it works properly.
-          null,
-          Math.max(minStageNumber, subQueryDefBuilder.getNextStageNumber()),
-          true // Always broadcast right-hand side of the join.
-      );
-
-      // Shift all input numbers in the clausePlan.
-      final int shift = inputSpecs.size();
-
-      newDataSource = JoinDataSource.create(
-          newDataSource,
-          shiftInputNumbers(clausePlan.getNewDataSource(), shift),
-          clause.getPrefix(),
-          clause.getCondition(),
-          clause.getJoinType(),
-          // First JoinDataSource (i == 0) involves the base table, so we need to propagate the base table filter.
-          i == 0 ? analysis.getJoinBaseTableFilter().orElse(null) : null,
-          dataSource.getJoinableFactoryWrapper(),
-          clause.getJoinAlgorithm()
-      );
-      inputSpecs.addAll(clausePlan.getInputSpecs());
-      clausePlan.getBroadcastInputs().intStream().forEach(n -> broadcastInputs.add(n + shift));
-      clausePlan.getSubQueryDefBuilder().ifPresent(subQueryDefBuilder::addAll);
-    }
-
-    return new DataSourcePlan(newDataSource, inputSpecs, broadcastInputs, subQueryDefBuilder);
-  }
+//  private static DataSourcePlan forBroadcastHashJoin(
+//      final QueryKitSpec queryKitSpec,
+//      final QueryContext queryContext,
+//      final JoinDataSource dataSource,
+//      final QuerySegmentSpec querySegmentSpec,
+//      @Nullable final DimFilter filter,
+//      @Nullable final Set<String> filterFields,
+//      final int minStageNumber,
+//      final boolean broadcast
+//  )
+//  {
+//    final QueryDefinitionBuilder subQueryDefBuilder = QueryDefinition.builder(queryKitSpec.getQueryId());
+//    final DataSourceAnalysis analysis = dataSource.getAnalysis();
+//
+//    final DataSourcePlan basePlan = forDataSource(
+//        queryKitSpec,
+//        queryContext,
+//        analysis.getBaseDataSource(),
+//        querySegmentSpec,
+//        filter,
+//        filter == null ? null : DimFilterUtils.onlyBaseFields(filterFields, analysis),
+//        Math.max(minStageNumber, subQueryDefBuilder.getNextStageNumber()),
+//        broadcast
+//    );
+//
+//    DataSource newDataSource = basePlan.getNewDataSource();
+//    final List<InputSpec> inputSpecs = new ArrayList<>(basePlan.getInputSpecs());
+//    final IntSet broadcastInputs = new IntOpenHashSet(basePlan.getBroadcastInputs());
+//    basePlan.getSubQueryDefBuilder().ifPresent(subQueryDefBuilder::addAll);
+//
+//    for (int i = 0; i < analysis.getPreJoinableClauses().size(); i++) {
+//      final PreJoinableClause clause = analysis.getPreJoinableClauses().get(i);
+//      final DataSourcePlan clausePlan = forDataSource(
+//          queryKitSpec,
+//          queryContext,
+//          clause.getDataSource(),
+//          new MultipleIntervalSegmentSpec(Intervals.ONLY_ETERNITY),
+//          null, // Don't push down query filters for right-hand side: needs some work to ensure it works properly.
+//          null,
+//          Math.max(minStageNumber, subQueryDefBuilder.getNextStageNumber()),
+//          true // Always broadcast right-hand side of the join.
+//      );
+//
+//      // Shift all input numbers in the clausePlan.
+//      final int shift = inputSpecs.size();
+//
+//      newDataSource = JoinDataSource.create(
+//          newDataSource,
+//          shiftInputNumbers(clausePlan.getNewDataSource(), shift),
+//          clause.getPrefix(),
+//          clause.getCondition(),
+//          clause.getJoinType(),
+//          // First JoinDataSource (i == 0) involves the base table, so we need to propagate the base table filter.
+//          i == 0 ? analysis.getJoinBaseTableFilter().orElse(null) : null,
+//          dataSource.getJoinableFactoryWrapper(),
+//          clause.getJoinAlgorithm()
+//      );
+//      inputSpecs.addAll(clausePlan.getInputSpecs());
+//      clausePlan.getBroadcastInputs().intStream().forEach(n -> broadcastInputs.add(n + shift));
+//      clausePlan.getSubQueryDefBuilder().ifPresent(subQueryDefBuilder::addAll);
+//    }
+//
+//    return new DataSourcePlan(newDataSource, inputSpecs, broadcastInputs, subQueryDefBuilder);
+//  }
 
   /**
    * Build a plan for sort-merge join.

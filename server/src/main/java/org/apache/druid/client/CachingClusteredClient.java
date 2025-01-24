@@ -69,11 +69,12 @@ import org.apache.druid.query.QuerySegmentWalker;
 import org.apache.druid.query.QueryToolChest;
 import org.apache.druid.query.Result;
 import org.apache.druid.query.SegmentDescriptor;
+import org.apache.druid.query.TableDataSource;
 import org.apache.druid.query.aggregation.MetricManipulatorFns;
 import org.apache.druid.query.context.ResponseContext;
+import org.apache.druid.query.filter.DimFilter;
 import org.apache.druid.query.filter.DimFilterUtils;
 import org.apache.druid.query.planning.DataSourceAnalysis;
-import org.apache.druid.query.spec.QuerySegmentSpec;
 import org.apache.druid.server.QueryResource;
 import org.apache.druid.server.QueryScheduler;
 import org.apache.druid.server.coordination.DruidServerMetadata;
@@ -275,7 +276,7 @@ public class CachingClusteredClient implements QuerySegmentWalker
       this.query = queryPlus.getQuery();
       this.toolChest = conglomerate.getToolChest(query);
       this.strategy = toolChest.getCacheStrategy(query, objectMapper);
-      this.dataSourceAnalysis = query.getDataSource().getAnalysis();
+      this.dataSourceAnalysis = query.getDataSourceAnalysis();
 
       this.useCache = CacheUtil.isUseSegmentCache(query, strategy, cacheConfig, CacheUtil.ServerType.BROKER);
       this.populateCache = CacheUtil.isPopulateSegmentCache(query, strategy, cacheConfig, CacheUtil.ServerType.BROKER);
@@ -285,9 +286,7 @@ public class CachingClusteredClient implements QuerySegmentWalker
       // and might blow up in some cases https://github.com/apache/druid/issues/2108
       this.uncoveredIntervalsLimit = queryContext.getUncoveredIntervalsLimit();
       // For nested queries, we need to look at the intervals of the inner most query.
-      this.intervals = dataSourceAnalysis.getBaseQuerySegmentSpec()
-                                         .map(QuerySegmentSpec::getIntervals)
-                                         .orElseGet(() -> query.getIntervals());
+      this.intervals = dataSourceAnalysis.getInnerQuerySegmentSpec().getIntervals();
       this.cacheKeyManager = new CacheKeyManager<>(
           query,
           strategy,
@@ -324,17 +323,16 @@ public class CachingClusteredClient implements QuerySegmentWalker
      * merge is enabled, it can merge and *combine* the underlying sequences in parallel.
      *
      * @return a pair of a sequence merging results from remote query servers and the number of remote servers
-     *         participating in query processing.
+     * participating in query processing.
      */
     ClusterQueryResult<T> run(
         final UnaryOperator<TimelineLookup<String, ServerSelector>> timelineConverter,
         final boolean specificSegments
     )
     {
-      final Optional<? extends TimelineLookup<String, ServerSelector>> maybeTimeline = serverView.getTimeline(
-          dataSourceAnalysis
-      );
-      if (!maybeTimeline.isPresent()) {
+      final TableDataSource table = dataSourceAnalysis.getBaseTableDataSource();
+      final Optional<? extends TimelineLookup<String, ServerSelector>> maybeTimeline = serverView.getTimeline(table);
+      if (maybeTimeline.isEmpty()) {
         return new ClusterQueryResult<>(Sequences.empty(), 0);
       }
 
@@ -438,28 +436,21 @@ public class CachingClusteredClient implements QuerySegmentWalker
       );
 
       final Set<SegmentServerSelector> segments = new LinkedHashSet<>();
-      final Map<String, Optional<RangeSet<String>>> dimensionRangeCache;
-      final Set<String> filterFieldsForPruning;
 
-      final boolean trySecondaryPartititionPruning =
-          query.getFilter() != null && query.context().isSecondaryPartitionPruningEnabled();
-
-      if (trySecondaryPartititionPruning) {
-        dimensionRangeCache = new HashMap<>();
-        filterFieldsForPruning =
-            DimFilterUtils.onlyBaseFields(query.getFilter().getRequiredColumns(), dataSourceAnalysis);
-      } else {
-        dimensionRangeCache = null;
-        filterFieldsForPruning = null;
-      }
+      final DimFilter pruningFilter =
+          query.context().isSecondaryPartitionPruningEnabled()
+          ? dataSourceAnalysis.getPruningFilter()
+          : null;
 
       // Filter unneeded chunks based on partition dimension
+      final Map<String, Optional<RangeSet<String>>> dimensionRangeCache =
+          pruningFilter != null ? new HashMap<>() : null;
+
       for (TimelineObjectHolder<String, ServerSelector> holder : serversLookup) {
         final Set<PartitionChunk<ServerSelector>> filteredChunks;
-        if (trySecondaryPartititionPruning) {
+        if (pruningFilter != null) {
           filteredChunks = DimFilterUtils.filterShards(
-              query.getFilter(),
-              filterFieldsForPruning,
+              pruningFilter,
               holder.getObject(),
               partitionChunk -> partitionChunk.getObject().getSegment().getShardSpec(),
               dimensionRangeCache
@@ -790,7 +781,8 @@ public class CachingClusteredClient implements QuerySegmentWalker
       this.query = query;
       this.strategy = strategy;
       this.isSegmentLevelCachingEnable = ((populateCache || useCache)
-                                          && !query.context().isBySegment());   // explicit bySegment queries are never cached
+                                          && !query.context()
+                                                   .isBySegment());   // explicit bySegment queries are never cached
 
     }
 
@@ -845,12 +837,13 @@ public class CachingClusteredClient implements QuerySegmentWalker
 
     /**
      * Adds the cache key prefix for join data sources. Return null if its a join but caching is not supported
+     * TODO(gianm): update javadocs above
      */
     @Nullable
     private byte[] computeQueryCacheKeyWithJoin()
     {
       Preconditions.checkNotNull(strategy, "strategy cannot be null");
-      byte[] dataSourceCacheKey = query.getDataSource().getCacheKey();
+      byte[] dataSourceCacheKey = query.getDataSourceAnalysis().getSegmentMapFunction().getCacheKey();
       if (null == dataSourceCacheKey) {
         return null;
       } else if (dataSourceCacheKey.length > 0) {

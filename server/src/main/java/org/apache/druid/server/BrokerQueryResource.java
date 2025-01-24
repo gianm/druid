@@ -97,8 +97,7 @@ public class BrokerQueryResource extends QueryResource
       return ioReaderWriter.getResponseWriter().ok(
           ServerViewUtil.getTargetLocations(
               brokerServerView,
-              query.getDataSource(),
-              query.getIntervals(),
+              query,
               numCandidates
           )
       );

@@ -24,16 +24,14 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonTypeName;
 import com.google.common.base.Preconditions;
 import org.apache.druid.java.util.common.IAE;
-import org.apache.druid.query.planning.DataSourceAnalysis;
 import org.apache.druid.query.union.UnionQuery;
-import org.apache.druid.segment.SegmentReference;
+import org.apache.druid.segment.map.SegmentMapFunctionFactory;
 
+import javax.annotation.Nullable;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.Function;
 
 @JsonTypeName("query")
 public class QueryDataSource implements DataSource
@@ -108,33 +106,18 @@ public class QueryDataSource implements DataSource
     return false;
   }
 
+  @Nullable
   @Override
-  public Function<SegmentReference, SegmentReference> createSegmentMapFunction(
-      Query query,
-      AtomicLong cpuTime
-  )
-  {
-    final Query<?> subQuery = this.getQuery();
-    return subQuery.getDataSource().createSegmentMapFunction(subQuery, cpuTime);
-  }
-
-  @Override
-  public DataSource withUpdatedDataSource(DataSource newSource)
-  {
-    return new QueryDataSource(query.withDataSource(query.getDataSource().withUpdatedDataSource(newSource)));
-  }
-
-  @Override
-  public byte[] getCacheKey()
+  public DataSource getConcreteBase()
   {
     return null;
   }
 
+  @Nullable
   @Override
-  public DataSourceAnalysis getAnalysis()
+  public SegmentMapFunctionFactory getSegmentMapFunctionFactory()
   {
-    final Query<?> subQuery = this.getQuery();
-    return subQuery.getDataSourceAnalysis();
+    return null;
   }
 
   @Override

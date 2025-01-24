@@ -23,6 +23,7 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
+import org.apache.druid.error.DruidException;
 import org.apache.druid.java.util.common.io.Closer;
 import org.apache.druid.query.OrderBy;
 import org.apache.druid.query.filter.Filter;
@@ -40,6 +41,7 @@ import org.apache.druid.segment.join.filter.JoinFilterAnalyzer;
 import org.apache.druid.segment.join.filter.JoinFilterPreAnalysis;
 import org.apache.druid.segment.join.filter.JoinFilterPreAnalysisKey;
 import org.apache.druid.segment.join.filter.JoinFilterSplit;
+import org.apache.druid.segment.join.filter.rewrite.JoinFilterRewriteConfig;
 import org.apache.druid.utils.CloseableUtils;
 
 import javax.annotation.Nullable;
@@ -56,13 +58,14 @@ public class HashJoinSegmentCursorFactory implements CursorFactory
   @Nullable
   private final Filter baseFilter;
   private final List<JoinableClause> clauses;
+  @Nullable
   private final JoinFilterPreAnalysis joinFilterPreAnalysis;
 
   public HashJoinSegmentCursorFactory(
       CursorFactory baseCursorFactory,
       @Nullable Filter baseFilter,
       List<JoinableClause> clauses,
-      JoinFilterPreAnalysis joinFilterPreAnalysis
+      @Nullable JoinFilterPreAnalysis joinFilterPreAnalysis
   )
   {
     this.baseCursorFactory = baseCursorFactory;
@@ -106,8 +109,9 @@ public class HashJoinSegmentCursorFactory implements CursorFactory
       final Closer joinablesCloser = Closer.create();
 
       /**
-       * Typically the same as {@link HashJoinSegmentCursorFactory#joinFilterPreAnalysis}, but may differ when
-       * an unnest datasource is layered on top of a join datasource.
+       * The actual analysis to use. Taken from {@link HashJoinSegmentCursorFactory#joinFilterPreAnalysis} if nonnull,
+       * otherwise computed as part of cursor creation. Analysis is precomputed when the join is the top-level
+       * datasource.
        */
       final JoinFilterPreAnalysis actualPreAnalysis;
 
@@ -123,27 +127,29 @@ public class HashJoinSegmentCursorFactory implements CursorFactory
       final CursorHolder baseCursorHolder;
 
       {
-        // Filter pre-analysis key implied by the call to "makeCursorHolder". We need to sanity-check that it matches
-        // the actual pre-analysis that was done. Note: we could now infer a rewrite config from the "makeCursorHolder"
-        // call (it requires access to the query context which we now have access to since the move away from
-        // CursorFactory) but this code hasn't been updated to sanity-check it, so currently we are still skipping it
-        // by re-using the one present in the cached key.
+        // Filter pre-analysis key implied by the call to "makeCursorHolder".
         final JoinFilterPreAnalysisKey keyIn =
             new JoinFilterPreAnalysisKey(
-                joinFilterPreAnalysis.getKey().getRewriteConfig(),
+                JoinFilterRewriteConfig.forQueryContext(spec.getQueryContext()),
                 clauses,
                 spec.getVirtualColumns(),
                 combinedFilter
             );
 
-        final JoinFilterPreAnalysisKey keyCached = joinFilterPreAnalysis.getKey();
-        if (keyIn.equals(keyCached)) {
-          // Common case: key used during filter pre-analysis (keyCached) matches key implied by makeCursorHolder call
-          // (keyIn).
-          actualPreAnalysis = joinFilterPreAnalysis;
+        if (joinFilterPreAnalysis != null) {
+          // Common case: filter pre-analysis was done before cursor creation. This happens when the join is the
+          // top-level datasource. We just need to sanity-check that the pre-analysis matches the key that we expect.
+          final JoinFilterPreAnalysisKey keyCached = joinFilterPreAnalysis.getKey();
+
+          if (keyIn.equals(keyCached)) {
+            // key used during filter pre-analysis (keyCached) matches key implied by makeCursorHolder call (keyIn).
+            actualPreAnalysis = joinFilterPreAnalysis;
+          } else {
+            throw DruidException.defensive("Pre-analyzed key[%s] != expected key[%s]", keyCached, keyIn);
+          }
         } else {
-          // Less common case: key differs. Re-analyze the filter. This case can happen when an unnest datasource is
-          // layered on top of a join datasource.
+          // Less common case: joinFilterPreAnalysis was not pre-computed at all.
+          // For example, this can happen when an unnest datasource is layered on top of a join datasource.
           actualPreAnalysis = JoinFilterAnalyzer.computeJoinFilterPreAnalysis(keyIn);
         }
 
@@ -159,7 +165,7 @@ public class HashJoinSegmentCursorFactory implements CursorFactory
             Iterables.concat(
                 Sets.difference(
                     ImmutableSet.copyOf(spec.getVirtualColumns().getVirtualColumns()),
-                    joinFilterPreAnalysis.getPostJoinVirtualColumns()
+                    actualPreAnalysis.getPostJoinVirtualColumns()
                 ),
                 joinFilterSplit.getPushDownVirtualColumns()
             )

@@ -61,7 +61,8 @@ public class TableInputSpec implements InputSpec
    *                     {@link SegmentWithDescriptor} from {@link ReadableInput#getSegment()}. This matches how
    *                     Broker-based pruning works for native queries.
    * @param filterFields list of fields from {@link DimFilter#getRequiredColumns()} to consider for pruning. If null,
-   *                     all fields are considered for pruning.
+   *                     all fields are considered for pruning. This field is no longer populated by current code,
+   *                     but remains here for backwards compatibility.
    */
   @JsonCreator
   public TableInputSpec(

@@ -38,6 +38,7 @@ import org.apache.druid.segment.ReferenceCountingSegment;
 import org.apache.druid.segment.SegmentReference;
 import org.apache.druid.segment.SegmentWrangler;
 import org.apache.druid.segment.join.JoinableFactoryWrapper;
+import org.apache.druid.utils.JvmUtils;
 import org.joda.time.Interval;
 
 import java.util.concurrent.atomic.AtomicLong;
@@ -81,7 +82,7 @@ public class LocalQuerySegmentWalker implements QuerySegmentWalker
   public <T> QueryRunner<T> getQueryRunnerForIntervals(final Query<T> query, final Iterable<Interval> intervals)
   {
     final DataSource dataSourceFromQuery = query.getDataSource();
-    final DataSourceAnalysis analysis = dataSourceFromQuery.getAnalysis();
+    final DataSourceAnalysis analysis = query.getDataSourceAnalysis();
 
     if (!analysis.isConcreteBased() || !dataSourceFromQuery.isGlobal()) {
       throw new IAE("Cannot query dataSource locally: %s", dataSourceFromQuery);
@@ -95,12 +96,8 @@ public class LocalQuerySegmentWalker implements QuerySegmentWalker
 
     final AtomicLong cpuAccumulator = new AtomicLong(0L);
 
-    final Function<SegmentReference, SegmentReference> segmentMapFn = dataSourceFromQuery
-        .createSegmentMapFunction(
-            query,
-            cpuAccumulator
-        );
-
+    final Function<SegmentReference, SegmentReference> segmentMapFn =
+        JvmUtils.safeAccumulateThreadCpuTime(cpuAccumulator, () -> analysis.getSegmentMapFunction().makeFunction(query));
 
     final QueryRunnerFactory<T, Query<T>> queryRunnerFactory = conglomerate.findFactory(query);
     final QueryRunner<T> baseRunner = queryRunnerFactory.mergeRunners(

@@ -22,9 +22,12 @@ package org.apache.druid.query.filter;
 import com.google.common.base.Predicates;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
+import org.apache.druid.error.DruidException;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 
 /**
  *
@@ -36,24 +39,59 @@ public class DimFilters
     return new SelectorDimFilter(dimension, value, null);
   }
 
-  public static AndDimFilter and(DimFilter... filters)
+  public static Optional<DimFilter> maybeAnd(List<DimFilter> filters)
+  {
+    final List<DimFilter> flattened = new ArrayList<>();
+    for (final DimFilter filter : filters) {
+      if (filter instanceof AndDimFilter) {
+        flattened.addAll(((AndDimFilter) filter).getFields());
+      } else if (filter != null) {
+        flattened.add(filter);
+      }
+    }
+
+    switch (flattened.size()) {
+      case 0:
+        return Optional.empty();
+      case 1:
+        return Optional.of(flattened.get(0));
+      default:
+        return Optional.of(new AndDimFilter(filters));
+    }
+  }
+
+  public static DimFilter and(DimFilter... filters)
   {
     return and(Arrays.asList(filters));
   }
 
-  public static AndDimFilter and(List<DimFilter> filters)
+  public static DimFilter and(List<DimFilter> filters)
   {
-    return new AndDimFilter(filters);
+    return maybeAnd(filters)
+        .orElseThrow(() -> DruidException.defensive("Must have at least one non-null filter"));
   }
 
-  public static OrDimFilter or(DimFilter... filters)
+  public static DimFilter or(DimFilter... filters)
   {
     return or(Arrays.asList(filters));
   }
 
-  public static OrDimFilter or(List<DimFilter> filters)
+  public static DimFilter or(List<DimFilter> filters)
   {
-    return new OrDimFilter(filters);
+    final List<DimFilter> flattened = new ArrayList<>();
+    for (final DimFilter filter : filters) {
+      if (filter instanceof OrDimFilter) {
+        flattened.addAll(((OrDimFilter) filter).getFields());
+      } else if (filter != null) {
+        flattened.add(filter);
+      }
+    }
+
+    if (flattened.size() == 1) {
+      return flattened.get(0);
+    } else {
+      return new OrDimFilter(filters);
+    }
   }
 
   public static NotDimFilter not(DimFilter filter)

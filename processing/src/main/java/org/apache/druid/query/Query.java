@@ -34,6 +34,7 @@ import org.apache.druid.query.groupby.GroupByQuery;
 import org.apache.druid.query.metadata.metadata.SegmentMetadataQuery;
 import org.apache.druid.query.operator.WindowOperatorQuery;
 import org.apache.druid.query.planning.DataSourceAnalysis;
+import org.apache.druid.query.planning.DataSources;
 import org.apache.druid.query.scan.ScanQuery;
 import org.apache.druid.query.search.SearchQuery;
 import org.apache.druid.query.select.SelectQuery;
@@ -292,9 +293,12 @@ public interface Query<T>
     );
   }
 
+  /**
+   * TODO(gianm): document how this is different from {@link DataSource#getAnalysis()}. consider name change
+   */
   default DataSourceAnalysis getDataSourceAnalysis()
   {
-    return getDataSource().getAnalysis().maybeWithBaseQuery(this);
+    return DataSources.analyze(this);
   }
 
   default RowSignature getResultRowSignature()

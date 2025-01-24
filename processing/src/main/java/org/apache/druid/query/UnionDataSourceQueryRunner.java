@@ -19,7 +19,6 @@
 
 package org.apache.druid.query;
 
-import com.google.common.base.Function;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import org.apache.commons.lang3.StringUtils;
@@ -31,6 +30,7 @@ import org.apache.druid.java.util.common.guava.Sequences;
 import org.apache.druid.query.context.ResponseContext;
 import org.apache.druid.query.planning.DataSourceAnalysis;
 
+import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -50,7 +50,7 @@ public class UnionDataSourceQueryRunner<T> implements QueryRunner<T>
   {
     Query<T> query = queryPlus.getQuery();
 
-    final DataSourceAnalysis analysis = query.getDataSource().getAnalysis();
+    final DataSourceAnalysis analysis = query.getDataSourceAnalysis();
 
     if (analysis.isConcreteAndTableBased() && analysis.getBaseUnionDataSource().isPresent()) {
       // Union of tables.
@@ -62,15 +62,13 @@ public class UnionDataSourceQueryRunner<T> implements QueryRunner<T>
         throw new ISE("Unexpectedly received empty union");
       } else if (unionDataSource.getDataSourcesAsTableDataSources().size() == 1) {
         // Single table. Run as a normal query.
-        return baseRunner.run(
-            queryPlus.withQuery(
-                Queries.withBaseDataSource(
-                    query,
-                    Iterables.getOnlyElement(unionDataSource.getDataSourcesAsTableDataSources())
-                )
-            ),
-            responseContext
+        final DataSource newDataSource = replaceUnionWithTable(
+            query.getDataSource(),
+            unionDataSource,
+            Iterables.getOnlyElement(unionDataSource.getDataSourcesAsTableDataSources())
         );
+        final QueryPlus<T> newQuery = queryPlus.withQuery(query.withDataSource(newDataSource));
+        return baseRunner.run(newQuery, responseContext);
       } else {
         // Split up the tables and merge their results.
         return new MergeSequence<>(
@@ -80,20 +78,27 @@ public class UnionDataSourceQueryRunner<T> implements QueryRunner<T>
                     IntStream.range(0, unionDataSource.getDataSourcesAsTableDataSources().size())
                              .mapToObj(i -> new Pair<>(unionDataSource.getDataSourcesAsTableDataSources().get(i), i + 1))
                              .collect(Collectors.toList()),
-                    (Function<Pair<TableDataSource, Integer>, Sequence<T>>) singleSourceWithIndex ->
-                        baseRunner.run(
-                            queryPlus.withQuery(
-                                Queries.withBaseDataSource(query, singleSourceWithIndex.lhs)
-                                       // assign the subqueryId. this will be used to validate that every query servers
-                                       // have responded per subquery in RetryQueryRunner
-                                       .withSubQueryId(generateSubqueryId(
-                                           query.getSubQueryId(),
-                                           singleSourceWithIndex.lhs.getName(),
-                                           singleSourceWithIndex.rhs
-                                       ))
-                            ),
-                            responseContext
-                        )
+                    singleSourceWithIndex -> {
+                      final DataSource newDataSource = replaceUnionWithTable(
+                          query.getDataSource(),
+                          unionDataSource,
+                          singleSourceWithIndex.lhs
+                      );
+
+                      // assign the subqueryId. this will be used to validate that every query servers
+                      // have responded per subquery in RetryQueryRunner
+                      final Query<T> newQuery =
+                          query.withDataSource(newDataSource)
+                               .withSubQueryId(
+                                   generateSubqueryId(
+                                       query.getSubQueryId(),
+                                       singleSourceWithIndex.lhs.getName(),
+                                       singleSourceWithIndex.rhs
+                                   )
+                               );
+
+                      return baseRunner.run(queryPlus.withQuery(newQuery), responseContext);
+                    }
                 )
             )
 
@@ -112,6 +117,7 @@ public class UnionDataSourceQueryRunner<T> implements QueryRunner<T>
    * @param parentSubqueryId The subquery Id of the parent query which is generating this subquery
    * @param dataSourceName   Name of the datasource for which the UnionRunner is running
    * @param dataSourceIndex  Position of the datasource for which the UnionRunner is running
+   *
    * @return Subquery Id which needs to be populated
    */
   private String generateSubqueryId(String parentSubqueryId, String dataSourceName, int dataSourceIndex)
@@ -121,5 +127,26 @@ public class UnionDataSourceQueryRunner<T> implements QueryRunner<T>
       return dataSourceNameIndex;
     }
     return parentSubqueryId + "." + dataSourceNameIndex;
+  }
+
+  /**
+   * Replace the datasource "union" within "table" when it appears within "dataSource". Returns a copy of "dataSource".
+   */
+  static DataSource replaceUnionWithTable(
+      final DataSource dataSource,
+      final UnionDataSource union,
+      final TableDataSource table
+  )
+  {
+    if (dataSource.equals(union)) {
+      return table;
+    } else {
+      final List<DataSource> children = dataSource.getChildren();
+      return dataSource.withChildren(
+          children.stream()
+                  .map(child -> replaceUnionWithTable(child, union, table))
+                  .collect(Collectors.toList())
+      );
+    }
   }
 }

@@ -26,16 +26,16 @@ import com.google.common.base.Preconditions;
 import org.apache.druid.java.util.common.IAE;
 import org.apache.druid.query.planning.DataSourceAnalysis;
 import org.apache.druid.query.policy.Policy;
-import org.apache.druid.segment.SegmentReference;
+import org.apache.druid.segment.map.LeafSegmentMapFunctionFactory;
+import org.apache.druid.segment.map.SegmentMapFunctionFactory;
 
+import javax.annotation.Nullable;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.Function;
 
 @JsonTypeName("table")
 public class TableDataSource implements DataSource
@@ -100,19 +100,18 @@ public class TableDataSource implements DataSource
     return true;
   }
 
+  @Nullable
   @Override
-  public Function<SegmentReference, SegmentReference> createSegmentMapFunction(
-      Query query,
-      AtomicLong cpuTime
-  )
+  public DataSource getConcreteBase()
   {
-    return Function.identity();
+    return this;
   }
 
+  @Nullable
   @Override
-  public DataSource withUpdatedDataSource(DataSource newSource)
+  public SegmentMapFunctionFactory getSegmentMapFunctionFactory()
   {
-    return newSource;
+    return new LeafSegmentMapFunctionFactory(true);
   }
 
   @Override
@@ -124,18 +123,6 @@ public class TableDataSource implements DataSource
       return this;
     }
     return RestrictedDataSource.create(this, policy.get());
-  }
-
-  @Override
-  public byte[] getCacheKey()
-  {
-    return new byte[0];
-  }
-
-  @Override
-  public DataSourceAnalysis getAnalysis()
-  {
-    return new DataSourceAnalysis(this, null, null, Collections.emptyList());
   }
 
   @Override

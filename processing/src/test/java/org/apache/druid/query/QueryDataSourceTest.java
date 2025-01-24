@@ -24,7 +24,6 @@ import nl.jqno.equalsverifier.EqualsVerifier;
 import org.apache.druid.java.util.common.granularity.Granularities;
 import org.apache.druid.query.groupby.GroupByQuery;
 import org.apache.druid.query.timeseries.TimeseriesQuery;
-import org.apache.druid.segment.SegmentReference;
 import org.apache.druid.segment.TestHelper;
 import org.junit.Assert;
 import org.junit.Rule;
@@ -32,8 +31,6 @@ import org.junit.Test;
 import org.junit.rules.ExpectedException;
 
 import java.util.Collections;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.Function;
 
 public class QueryDataSourceTest
 {
@@ -171,20 +168,9 @@ public class QueryDataSourceTest
   }
 
   @Test
-  public void test_withSegmentMapFunction()
+  public void test_segmentMapFunction()
   {
-    Function<SegmentReference, SegmentReference> parentsegmentMapFunction = queryDataSource.createSegmentMapFunction(
-        groupByQuery,
-        new AtomicLong()
-    );
-
-    Function<SegmentReference, SegmentReference> childsegmentMapFunction = queryOnTableDataSource.createSegmentMapFunction(
-        groupByQuery,
-        new AtomicLong()
-    );
-    // The segment functions should both be identity functions and equal
-    Assert.assertEquals(parentsegmentMapFunction, childsegmentMapFunction);
+    Assert.assertNull(queryDataSource.getSegmentMapFunctionFactory());
+    Assert.assertNull(queryOnTableDataSource.getSegmentMapFunctionFactory());
   }
-
-  
 }

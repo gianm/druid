@@ -19,7 +19,6 @@
 
 package org.apache.druid.segment.join.filter.rewrite;
 
-import org.apache.druid.query.Query;
 import org.apache.druid.query.QueryContext;
 
 import java.util.Objects;
@@ -74,9 +73,8 @@ public class JoinFilterRewriteConfig
     this.filterRewriteMaxSize = filterRewriteMaxSize;
   }
 
-  public static JoinFilterRewriteConfig forQuery(final Query<?> query)
+  public static JoinFilterRewriteConfig forQueryContext(final QueryContext context)
   {
-    QueryContext context = query.context();
     return new JoinFilterRewriteConfig(
         context.getEnableJoinFilterPushDown(),
         context.getEnableJoinFilterRewrite(),

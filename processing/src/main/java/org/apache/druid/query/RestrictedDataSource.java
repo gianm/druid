@@ -24,20 +24,17 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
 import org.apache.druid.java.util.common.IAE;
 import org.apache.druid.java.util.common.ISE;
-import org.apache.druid.query.planning.DataSourceAnalysis;
 import org.apache.druid.query.policy.NoRestrictionPolicy;
 import org.apache.druid.query.policy.Policy;
-import org.apache.druid.segment.RestrictedSegment;
-import org.apache.druid.segment.SegmentReference;
-import org.apache.druid.utils.JvmUtils;
+import org.apache.druid.segment.map.RestrictedSegmentMapFunctionFactory;
+import org.apache.druid.segment.map.SegmentMapFunctionFactory;
 
+import javax.annotation.Nullable;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.Function;
 
 /**
  * Reperesents a TableDataSource with policy restriction.
@@ -118,31 +115,29 @@ public class RestrictedDataSource implements DataSource
     return base.isGlobal();
   }
 
+
   @Override
   public boolean isConcrete()
   {
     return base.isConcrete();
   }
 
+  @Nullable
   @Override
-  public Function<SegmentReference, SegmentReference> createSegmentMapFunction(
-      Query query,
-      AtomicLong cpuTimeAccumulator
-  )
+  public DataSource getConcreteBase()
   {
-    return JvmUtils.safeAccumulateThreadCpuTime(
-        cpuTimeAccumulator,
-        () -> base.createSegmentMapFunction(
-            query,
-            cpuTimeAccumulator
-        ).andThen((segment) -> (new RestrictedSegment(segment, policy)))
-    );
+    return base.getConcreteBase();
   }
 
+  @Nullable
   @Override
-  public DataSource withUpdatedDataSource(DataSource newSource)
+  public SegmentMapFunctionFactory getSegmentMapFunctionFactory()
   {
-    return create(newSource, policy);
+    if (isConcrete()) {
+      return new RestrictedSegmentMapFunctionFactory(base.getSegmentMapFunctionFactory(), policy);
+    } else {
+      return null;
+    }
   }
 
   @Override
@@ -179,19 +174,6 @@ public class RestrictedDataSource implements DataSource
     return "RestrictedDataSource{" +
            "base=" + base +
            ", policy=" + policy + "}";
-  }
-
-  @Override
-  public byte[] getCacheKey()
-  {
-    return new byte[0];
-  }
-
-  @Override
-  public DataSourceAnalysis getAnalysis()
-  {
-    final DataSource current = this.getBase();
-    return current.getAnalysis();
   }
 
   @Override

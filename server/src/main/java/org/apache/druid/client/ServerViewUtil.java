@@ -20,8 +20,8 @@
 package org.apache.druid.client;
 
 import org.apache.druid.client.selector.ServerSelector;
-import org.apache.druid.query.DataSource;
 import org.apache.druid.query.LocatedSegmentDescriptor;
+import org.apache.druid.query.Query;
 import org.apache.druid.query.SegmentDescriptor;
 import org.apache.druid.query.TableDataSource;
 import org.apache.druid.query.planning.DataSourceAnalysis;
@@ -40,28 +40,24 @@ import java.util.Optional;
  */
 public class ServerViewUtil
 {
+  /**
+   * Returns candidate segments for the provided datasouce and list of intervals. Note: this method does not take
+   * into account dimension-based segment pruning.
+   */
   public static List<LocatedSegmentDescriptor> getTargetLocations(
       TimelineServerView serverView,
-      String datasource,
+      String dataSource,
       List<Interval> intervals,
       int numCandidates
   )
   {
-    return getTargetLocations(serverView, new TableDataSource(datasource), intervals, numCandidates);
-  }
+    final Optional<? extends TimelineLookup<String, ServerSelector>> maybeTimeline =
+        serverView.getTimeline(new TableDataSource(dataSource));
 
-  public static List<LocatedSegmentDescriptor> getTargetLocations(
-      TimelineServerView serverView,
-      DataSource datasource,
-      List<Interval> intervals,
-      int numCandidates
-  )
-  {
-    final DataSourceAnalysis analysis = datasource.getAnalysis();
-    final Optional<? extends TimelineLookup<String, ServerSelector>> maybeTimeline = serverView.getTimeline(analysis);
-    if (!maybeTimeline.isPresent()) {
+    if (maybeTimeline.isEmpty()) {
       return Collections.emptyList();
     }
+
     List<LocatedSegmentDescriptor> located = new ArrayList<>();
     for (Interval interval : intervals) {
       for (TimelineObjectHolder<String, ServerSelector> holder : maybeTimeline.get().lookup(interval)) {
@@ -77,5 +73,24 @@ public class ServerViewUtil
       }
     }
     return located;
+  }
+
+  /**
+   * Returns candidate segments for the provided query. Note: this method does not take into account dimension-based
+   * segment pruning.
+   */
+  public static List<LocatedSegmentDescriptor> getTargetLocations(
+      TimelineServerView serverView,
+      Query<?> query,
+      int numCandidates
+  )
+  {
+    final DataSourceAnalysis analysis = query.getDataSourceAnalysis();
+    return getTargetLocations(
+        serverView,
+        analysis.getBaseTableDataSource().getName(),
+        analysis.getInnerQuerySegmentSpec().getIntervals(),
+        numCandidates
+    );
   }
 }

@@ -27,17 +27,14 @@ import org.apache.druid.data.input.InputFormat;
 import org.apache.druid.data.input.InputSource;
 import org.apache.druid.java.util.common.IAE;
 import org.apache.druid.query.DataSource;
-import org.apache.druid.query.Query;
-import org.apache.druid.query.planning.DataSourceAnalysis;
-import org.apache.druid.segment.SegmentReference;
 import org.apache.druid.segment.column.RowSignature;
+import org.apache.druid.segment.map.SegmentMapFunctionFactory;
 
+import javax.annotation.Nullable;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.Function;
 
 /**
  * Represents external data for INSERT queries. Only used by the SQL layer, not by the query stack.
@@ -124,31 +121,18 @@ public class ExternalDataSource implements DataSource
     return false;
   }
 
+  @Nullable
   @Override
-  public Function<SegmentReference, SegmentReference> createSegmentMapFunction(
-      Query query,
-      AtomicLong cpuTime
-  )
-  {
-    return Function.identity();
-  }
-
-  @Override
-  public DataSource withUpdatedDataSource(DataSource newSource)
-  {
-    return newSource;
-  }
-
-  @Override
-  public byte[] getCacheKey()
+  public DataSource getConcreteBase()
   {
     return null;
   }
 
+  @Nullable
   @Override
-  public DataSourceAnalysis getAnalysis()
+  public SegmentMapFunctionFactory getSegmentMapFunctionFactory()
   {
-    return new DataSourceAnalysis(this, null, null, Collections.emptyList());
+    return null;
   }
 
   @Override

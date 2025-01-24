@@ -40,6 +40,7 @@ import org.apache.druid.java.util.common.guava.Sequences;
 import org.apache.druid.math.expr.ExprMacroTable;
 import org.apache.druid.msq.indexing.error.BroadcastTablesTooLargeFault;
 import org.apache.druid.msq.indexing.error.MSQException;
+import org.apache.druid.msq.querykit.join.BroadcastJoinableFactoryProcessor;
 import org.apache.druid.query.DataSource;
 import org.apache.druid.query.InlineDataSource;
 import org.apache.druid.query.JoinAlgorithm;
@@ -69,7 +70,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Collectors;
 
-public class BroadcastJoinSegmentMapFnProcessorTest extends InitializedNullHandlingTest
+public class BroadcastJoinableFactoryProcessorTest extends InitializedNullHandlingTest
 {
   @Rule
   public TemporaryFolder temporaryFolder = new TemporaryFolder();
@@ -127,7 +128,7 @@ public class BroadcastJoinSegmentMapFnProcessorTest extends InitializedNullHandl
     channelReaders.add(frameReader1);
     channelReaders.add(frameReader2);
 
-    final BroadcastJoinSegmentMapFnProcessor broadcastJoinReader = new BroadcastJoinSegmentMapFnProcessor(
+    final BroadcastJoinableFactoryProcessor broadcastJoinReader = new BroadcastJoinableFactoryProcessor(
         null /* Query; not used for the methods we're testing */,
         sideStageChannelNumberMap,
         channels,
@@ -218,7 +219,7 @@ public class BroadcastJoinSegmentMapFnProcessorTest extends InitializedNullHandl
     final List<FrameReader> channelReaders = new ArrayList<>();
     channelReaders.add(frameReader1);
 
-    final BroadcastJoinSegmentMapFnProcessor broadcastJoinHelper = new BroadcastJoinSegmentMapFnProcessor(
+    final BroadcastJoinableFactoryProcessor broadcastJoinHelper = new BroadcastJoinableFactoryProcessor(
         null /* Query; not used for the methods we're testing */,
         sideStageChannelNumberMap,
         channels,
@@ -269,7 +270,7 @@ public class BroadcastJoinSegmentMapFnProcessorTest extends InitializedNullHandl
         )
     );
     EasyMock.replay(mockQuery);
-    final BroadcastJoinSegmentMapFnProcessor broadcastJoinHelper = new BroadcastJoinSegmentMapFnProcessor(
+    final BroadcastJoinableFactoryProcessor broadcastJoinHelper = new BroadcastJoinableFactoryProcessor(
         mockQuery,
         sideStageChannelNumberMap,
         channels,

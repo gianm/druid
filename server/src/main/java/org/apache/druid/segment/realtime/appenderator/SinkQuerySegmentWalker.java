@@ -75,6 +75,7 @@ import org.apache.druid.timeline.VersionedIntervalTimeline;
 import org.apache.druid.timeline.partition.IntegerPartitionChunk;
 import org.apache.druid.timeline.partition.PartitionChunk;
 import org.apache.druid.utils.CloseableUtils;
+import org.apache.druid.utils.JvmUtils;
 import org.joda.time.Interval;
 
 import javax.annotation.Nullable;
@@ -178,11 +179,11 @@ public class SinkQuerySegmentWalker implements QuerySegmentWalker
   {
     // We only handle one particular dataSource. Make sure that's what we have, then ignore from here on out.
     final DataSource dataSourceFromQuery = query.getDataSource();
-    final DataSourceAnalysis analysis = dataSourceFromQuery.getAnalysis();
+    final DataSourceAnalysis analysis = query.getDataSourceAnalysis();
 
     // Sanity check: make sure the query is based on the table we're meant to handle.
-    if (!analysis.getBaseTableDataSource().filter(ds -> dataSource.equals(ds.getName())).isPresent()) {
-      throw new ISE("Cannot handle datasource: %s", dataSourceFromQuery);
+    if (!analysis.getBaseTableDataSource().getName().equals(dataSource)) {
+      throw new ISE("Cannot handle datasource[%s]", dataSourceFromQuery);
     }
 
     final QueryRunnerFactory<T, Query<T>> factory = conglomerate.findFactory(query);
@@ -200,15 +201,15 @@ public class SinkQuerySegmentWalker implements QuerySegmentWalker
       throw new ISE("Cannot handle subquery: %s", dataSourceFromQuery);
     }
 
-    // segmentMapFn maps each base Segment into a joined Segment if necessary.
+    // segmentMapFn maps each base Segment if necessary.
     final Function<SegmentReference, SegmentReference> segmentMapFn =
-        dataSourceFromQuery.createSegmentMapFunction(
-            query,
-            cpuTimeAccumulator
+        JvmUtils.safeAccumulateThreadCpuTime(
+            cpuTimeAccumulator,
+            () -> analysis.getSegmentMapFunction().makeFunction(query)
         );
 
     // We compute the join cache key here itself so it doesn't need to be re-computed for every segment
-    final Optional<byte[]> cacheKeyPrefix = Optional.ofNullable(query.getDataSource().getCacheKey());
+    final Optional<byte[]> cacheKeyPrefix = Optional.ofNullable(analysis.getSegmentMapFunction().getCacheKey());
 
     // We need to report data for each Sink all-or-nothing, which means we need to acquire references for all
     // subsegments (FireHydrants) of a segment (Sink) at once. To ensure they are properly released even when a

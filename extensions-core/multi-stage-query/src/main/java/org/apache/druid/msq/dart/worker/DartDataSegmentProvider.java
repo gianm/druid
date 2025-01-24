@@ -65,9 +65,9 @@ public class DartDataSegmentProvider implements DataSegmentProvider
 
     return () -> {
       final Optional<VersionedIntervalTimeline<String, ReferenceCountingSegment>> timeline =
-          segmentManager.getTimeline(new TableDataSource(segmentId.getDataSource()).getAnalysis());
+          segmentManager.getTimeline(new TableDataSource(segmentId.getDataSource()));
 
-      if (!timeline.isPresent()) {
+      if (timeline.isEmpty()) {
         throw segmentNotFound(segmentId);
       }
 

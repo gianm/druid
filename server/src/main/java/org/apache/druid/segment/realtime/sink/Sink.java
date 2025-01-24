@@ -306,7 +306,7 @@ public class Sink implements Iterable<FireHydrant>, Overshadowable<Sink>
    * Acquire references to all {@link FireHydrant} that represent this sink. Returns null if they cannot all be
    * acquired, possibly because they were closed (swapped to null) concurrently with this method being called.
    *
-   * @param segmentMapFn           from {@link org.apache.druid.query.DataSource#createSegmentMapFunction(Query, AtomicLong)}
+   * @param segmentMapFn           from {@link org.apache.druid.query.DataSource#createSegmentMapPipeline(Query, AtomicLong)}
    * @param skipIncrementalSegment whether in-memory {@link IncrementalIndex} segments should be skipped
    */
   @Nullable

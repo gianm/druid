@@ -36,20 +36,21 @@ import org.apache.druid.query.QuerySegmentWalker;
 import org.apache.druid.query.UnionDataSource;
 import org.apache.druid.query.filter.DimFilter;
 import org.apache.druid.query.planning.DataSourceAnalysis;
+import org.apache.druid.query.planning.DataSources;
 import org.apache.druid.query.spec.QuerySegmentSpec;
-import org.apache.druid.segment.SegmentReference;
 import org.apache.druid.segment.column.RowSignature;
 import org.apache.druid.segment.column.RowSignature.Finalization;
+import org.apache.druid.segment.map.SegmentMapFunctionFactory;
 import org.joda.time.DateTimeZone;
 import org.joda.time.Duration;
 import org.joda.time.Interval;
 
+import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 
 public class UnionQuery implements Query<Object>
@@ -222,12 +223,12 @@ public class UnionQuery implements Query<Object>
   public DataSourceAnalysis getDataSourceAnalysis()
   {
     OpaqueDataSourceCover ds = new OpaqueDataSourceCover(new UnionDataSource(getDataSources()));
-    return new DataSourceAnalysis(ds, null, null, Collections.emptyList());
+    return DataSources.analyze(withDataSource(ds));
   }
 
   private static class OpaqueDataSourceCover implements DataSource
   {
-    private DataSource delegate;
+    private final DataSource delegate;
 
     public OpaqueDataSourceCover(DataSource delegate)
     {
@@ -270,26 +271,17 @@ public class UnionQuery implements Query<Object>
       return delegate.isConcrete();
     }
 
+    @Nullable
     @Override
-    public Function<SegmentReference, SegmentReference> createSegmentMapFunction(Query query, AtomicLong cpuTimeAcc)
+    public DataSource getConcreteBase()
     {
-      throw methodNotSupported();
+      // TODO(gianm): is this correct? what is the purpose of OpaqueDataSourceCover?
+      return delegate.getConcreteBase();
     }
 
+    @Nullable
     @Override
-    public DataSource withUpdatedDataSource(DataSource newSource)
-    {
-      throw methodNotSupported();
-    }
-
-    @Override
-    public byte[] getCacheKey()
-    {
-      return delegate.getCacheKey();
-    }
-
-    @Override
-    public DataSourceAnalysis getAnalysis()
+    public SegmentMapFunctionFactory getSegmentMapFunctionFactory()
     {
       throw methodNotSupported();
     }

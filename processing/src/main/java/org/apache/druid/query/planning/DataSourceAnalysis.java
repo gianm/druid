@@ -19,25 +19,23 @@
 
 package org.apache.druid.query.planning;
 
-import org.apache.druid.java.util.common.IAE;
+import com.google.common.base.Preconditions;
+import org.apache.druid.error.DruidException;
 import org.apache.druid.query.BaseQuery;
 import org.apache.druid.query.DataSource;
-import org.apache.druid.query.JoinDataSource;
 import org.apache.druid.query.Query;
 import org.apache.druid.query.TableDataSource;
 import org.apache.druid.query.UnionDataSource;
-import org.apache.druid.query.UnnestDataSource;
 import org.apache.druid.query.filter.DimFilter;
 import org.apache.druid.query.spec.QuerySegmentSpec;
-import org.apache.druid.segment.join.JoinPrefixUtils;
+import org.apache.druid.segment.map.SegmentMapFunctionFactory;
 
 import javax.annotation.Nullable;
-
-import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
 /**
+ * TODO(gianm): update javadoc
  * Analysis of a datasource for purposes of deciding how to execute a particular query.
  *
  * The analysis breaks a datasource down in the following way:
@@ -46,7 +44,7 @@ import java.util.Optional;
  *
  *                             Q  <-- Possible query datasource(s) [may be none, or multiple stacked]
  *                             |
- *                             Q  <-- Base query datasource, returned by {@link #getBaseQuery()} if it exists
+ *                             Q  <-- Base query datasource, returned by {@link #getInnerQuery()} if it exists
  *                             |
  *                             J  <-- Possible join tree, expected to be left-leaning
  *                            / \
@@ -75,30 +73,33 @@ import java.util.Optional;
  */
 public class DataSourceAnalysis
 {
+  private final Query<?> innerQuery;
   private final DataSource baseDataSource;
   @Nullable
-  private final Query<?> baseQuery;
-  @Nullable
-  private final DimFilter joinBaseTableFilter;
-  private final List<PreJoinableClause> preJoinableClauses;
+  private final SegmentMapFunctionFactory segmentMapFunctionFactory;
 
-  public DataSourceAnalysis(
-      DataSource baseDataSource,
-      @Nullable Query<?> baseQuery,
-      @Nullable DimFilter joinBaseTableFilter,
-      List<PreJoinableClause> preJoinableClauses
+  DataSourceAnalysis(
+      final Query<?> innerQuery,
+      final DataSource baseDataSource
   )
   {
-    if (baseDataSource instanceof JoinDataSource) {
-      // The base cannot be a join (this is a class invariant).
+    if (baseDataSource.isConcrete() && !baseDataSource.getChildren().isEmpty()) {
+      // The base cannot have children if it is concrete (this is a class invariant).
       // If it happens, it's a bug in the datasource analyzer.
-      throw new IAE("Base dataSource cannot be a join! Original base datasource was: %s", baseDataSource);
+      throw DruidException.defensive(
+          "Base dataSource[%s] is invalid, cannot be segment-mappable unless it is also concrete",
+          baseDataSource
+      );
     }
 
-    this.baseDataSource = baseDataSource;
-    this.baseQuery = baseQuery;
-    this.joinBaseTableFilter = joinBaseTableFilter;
-    this.preJoinableClauses = preJoinableClauses;
+    this.innerQuery = Preconditions.checkNotNull(innerQuery, "innerQuery");
+    this.baseDataSource = Preconditions.checkNotNull(baseDataSource, "baseDataSource");
+
+    if (innerQuery.getDataSource().isConcrete()) {
+      segmentMapFunctionFactory = innerQuery.getDataSource().getSegmentMapFunctionFactory();
+    } else {
+      segmentMapFunctionFactory = null;
+    }
   }
 
   /**
@@ -110,17 +111,19 @@ public class DataSourceAnalysis
   }
 
   /**
-   * If {@link #getBaseDataSource()} is a {@link TableDataSource}, returns it. Otherwise, returns an empty Optional.
+   * If {@link #getBaseDataSource()} is a {@link TableDataSource}, returns it. Otherwise, throws an error of type
+   * {@link DruidException.Category#DEFENSIVE}. This method should only be used if the caller believes the base
+   * datasource really should be a table.
    *
-   * Note that this can return empty even if {@link #isConcreteAndTableBased()} is true. This happens if the base
+   * Note that this can throw an error even if {@link #isConcreteAndTableBased()} is true. This happens if the base
    * datasource is a {@link UnionDataSource} of {@link TableDataSource}.
    */
-  public Optional<TableDataSource> getBaseTableDataSource()
+  public TableDataSource getBaseTableDataSource()
   {
     if (baseDataSource instanceof TableDataSource) {
-      return Optional.of((TableDataSource) baseDataSource);
+      return (TableDataSource) baseDataSource;
     } else {
-      return Optional.empty();
+      throw DruidException.defensive("Base dataSource was not a table for query[%s]", innerQuery);
     }
   }
 
@@ -143,67 +146,53 @@ public class DataSourceAnalysis
    *
    * @return the query associated with the base datasource if  is true, else empty
    */
-  public Optional<Query<?>> getBaseQuery()
+  public Query<?> getInnerQuery()
   {
-    return Optional.ofNullable(baseQuery);
+    return innerQuery;
   }
 
   /**
-   * If the original data source is a join data source and there is a DimFilter on the base table data source,
-   * that DimFilter is returned here
+   * TODO(gianm): javadoc
    */
-  public Optional<DimFilter> getJoinBaseTableFilter()
+  @Nullable
+  public DimFilter getPruningFilter()
   {
-    return Optional.ofNullable(joinBaseTableFilter);
-  }
-
-  /**
-   * Returns the {@link QuerySegmentSpec} that is associated with the base datasource, if any. This only happens
-   * when there is an outer query datasource. In this case, the base querySegmentSpec is the one associated with the
-   * innermost subquery.
-   * <p>
-   * This {@link QuerySegmentSpec} is taken from the query returned by {@link #getBaseQuery()}.
-   *
-   * @return the query segment spec associated with the base datasource if  is true, else empty
-   */
-  public Optional<QuerySegmentSpec> getBaseQuerySegmentSpec()
-  {
-    return getBaseQuery().map(query -> ((BaseQuery<?>) query).getQuerySegmentSpec());
-  }
-
-  /**
-   * Returns the data source analysis with or without the updated query.
-   * If the DataSourceAnalysis already has a non-null baseQuery, no update is required
-   * Else this method creates a new analysis object with the base query provided in the input
-   *
-   * @param query the query to add to the analysis if the baseQuery is null
-   *
-   * @return the existing analysis if it has non-null basequery, else a new one with the updated base query
-   */
-  public DataSourceAnalysis maybeWithBaseQuery(Query<?> query)
-  {
-    if (!getBaseQuery().isPresent() && query instanceof BaseQuery) {
-      return new DataSourceAnalysis(baseDataSource, query, joinBaseTableFilter, preJoinableClauses);
+    if (segmentMapFunctionFactory == null) {
+      throw DruidException.defensive("No segmentMapFunction for query[%s]", innerQuery);
     }
-    return this;
+
+    return segmentMapFunctionFactory.getPruningFilter(innerQuery.getFilter());
   }
 
   /**
-   * Returns join clauses corresponding to joinable leaf datasources (every leaf except the bottom-leftmost).
+   * TODO(gianm): javadoc
    */
-  public List<PreJoinableClause> getPreJoinableClauses()
+  public SegmentMapFunctionFactory getSegmentMapFunction()
   {
-    return preJoinableClauses;
+    if (segmentMapFunctionFactory == null) {
+      throw DruidException.defensive("No segmentMapFunction for query[%s]", innerQuery);
+    }
+
+    return segmentMapFunctionFactory;
   }
 
   /**
-   * Returns true if this datasource can be computed by the core Druid query stack via a scan of a concrete base
-   * datasource. All other datasources involved, if any, must be global.
+   * Returns the {@link QuerySegmentSpec} that is associated with the base datasource. This {@link QuerySegmentSpec} is
+   * taken from the query returned by {@link #getInnerQuery()}.
+   *
+   * @return the query segment spec associated with the base datasource
+   */
+  public QuerySegmentSpec getInnerQuerySegmentSpec()
+  {
+    return ((BaseQuery<?>) getInnerQuery()).getQuerySegmentSpec();
+  }
+
+  /**
+   * Returns true if the base datasource is {@link DataSource#isConcrete()}.
    */
   public boolean isConcreteBased()
   {
-    return baseDataSource.isConcrete() && preJoinableClauses.stream()
-                                                            .allMatch(clause -> clause.getDataSource().isGlobal());
+    return baseDataSource.isConcrete();
   }
 
   /**
@@ -212,20 +201,21 @@ public class DataSourceAnalysis
    * <ul>
    *   <li>{@link TableDataSource}</li>
    *   <li>{@link UnionDataSource} composed entirely of {@link TableDataSource}</li>
-   *   <li>{@link UnnestDataSource} composed entirely of {@link TableDataSource}</li>
    * </ul>
+   *
+   * When this is true, and all joinables are global, the query can be handled by Druid's distributed
+   * query stack. See {@link #isConcreteAndTableBased()} for this check.
    */
   public boolean isTableBased()
   {
-    return (baseDataSource instanceof TableDataSource
-            || (baseDataSource instanceof UnionDataSource &&
-                baseDataSource.getChildren()
-                              .stream()
-                              .allMatch(ds -> ds instanceof TableDataSource))
-            || (baseDataSource instanceof UnnestDataSource &&
-                baseDataSource.getChildren()
-                              .stream()
-                              .allMatch(ds -> ds instanceof TableDataSource)));
+    if (baseDataSource instanceof TableDataSource) {
+      return true;
+    } else if (baseDataSource instanceof UnionDataSource) {
+      // getBaseTableDataSource() returns empty if this is a union, but we may still need to return true here.
+      return ((UnionDataSource) baseDataSource).isTables();
+    } else {
+      return false;
+    }
   }
 
   /**
@@ -235,77 +225,34 @@ public class DataSourceAnalysis
    */
   public boolean isConcreteAndTableBased()
   {
-    // At the time of writing this comment, UnionDataSource children are required to be tables, so the instanceof
-    // check is redundant. But in the future, we will likely want to support unions of things other than tables,
-    // so check anyway for future-proofing.
     return isConcreteBased() && isTableBased();
-  }
-
-  /**
-   * Returns true if this datasource is made out of a join operation
-   */
-  public boolean isJoin()
-  {
-    return !preJoinableClauses.isEmpty();
-  }
-
-  /**
-   * Returns whether "column" on the analyzed datasource refers to a column from the base datasource.
-   */
-  public boolean isBaseColumn(final String column)
-  {
-    if (baseQuery != null) {
-      return false;
-    }
-
-    for (final PreJoinableClause clause : preJoinableClauses) {
-      if (JoinPrefixUtils.isPrefixedBy(column, clause.getPrefix())) {
-        return false;
-      }
-    }
-
-    return true;
   }
 
   @Override
   public boolean equals(Object o)
   {
-    if (this == o) {
-      return true;
-    }
     if (o == null || getClass() != o.getClass()) {
       return false;
     }
     DataSourceAnalysis that = (DataSourceAnalysis) o;
-    return Objects.equals(baseDataSource, that.baseDataSource);
+    return Objects.equals(innerQuery, that.innerQuery)
+           && Objects.equals(baseDataSource, that.baseDataSource)
+           && Objects.equals(segmentMapFunctionFactory, that.segmentMapFunctionFactory);
   }
 
   @Override
   public int hashCode()
   {
-    return Objects.hash(baseDataSource);
+    return Objects.hash(innerQuery, baseDataSource, segmentMapFunctionFactory);
   }
 
   @Override
   public String toString()
   {
     return "DataSourceAnalysis{" +
+           "innerQuery=" + innerQuery +
            ", baseDataSource=" + baseDataSource +
-           ", baseQuery=" + baseQuery +
-           ", preJoinableClauses=" + preJoinableClauses +
+           ", segmentMapFunction=" + segmentMapFunctionFactory +
            '}';
-  }
-
-  /**
-   * {@link DataSource#isGlobal()}.
-   */
-  public boolean isGlobal()
-  {
-    for (PreJoinableClause preJoinableClause : preJoinableClauses) {
-      if (!preJoinableClause.getDataSource().isGlobal()) {
-        return false;
-      }
-    }
-    return baseDataSource.isGlobal();
   }
 }

@@ -24,17 +24,13 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
 import org.apache.druid.java.util.common.IAE;
 import org.apache.druid.query.filter.DimFilter;
-import org.apache.druid.query.planning.DataSourceAnalysis;
-import org.apache.druid.segment.FilteredSegment;
-import org.apache.druid.segment.SegmentReference;
-import org.apache.druid.utils.JvmUtils;
+import org.apache.druid.segment.map.FilterSegmentMapFunctionFactory;
+import org.apache.druid.segment.map.SegmentMapFunctionFactory;
 
 import javax.annotation.Nullable;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.Function;
 
 /**
  * This class models a data source to be unnested which is present along with a filter.
@@ -121,26 +117,22 @@ public class FilteredDataSource implements DataSource
     return base.isConcrete();
   }
 
+  @Nullable
   @Override
-  public Function<SegmentReference, SegmentReference> createSegmentMapFunction(
-      Query query,
-      AtomicLong cpuTimeAccumulator
-  )
+  public DataSource getConcreteBase()
   {
-    final Function<SegmentReference, SegmentReference> segmentMapFn = base.createSegmentMapFunction(
-        query,
-        cpuTimeAccumulator
-    );
-    return JvmUtils.safeAccumulateThreadCpuTime(
-        cpuTimeAccumulator,
-        () -> baseSegment -> new FilteredSegment(segmentMapFn.apply(baseSegment), filter)
-    );
+    return base.getConcreteBase();
   }
 
+  @Nullable
   @Override
-  public DataSource withUpdatedDataSource(DataSource newSource)
+  public SegmentMapFunctionFactory getSegmentMapFunctionFactory()
   {
-    return new FilteredDataSource(newSource, filter);
+    if (isConcrete()) {
+      return new FilterSegmentMapFunctionFactory(base.getSegmentMapFunctionFactory(), filter);
+    } else {
+      return null;
+    }
   }
 
   @Override
@@ -150,19 +142,6 @@ public class FilteredDataSource implements DataSource
            "base=" + base +
            ", filter='" + filter + '\'' +
            '}';
-  }
-
-  @Override
-  public byte[] getCacheKey()
-  {
-    return new byte[0];
-  }
-
-  @Override
-  public DataSourceAnalysis getAnalysis()
-  {
-    final DataSource current = this.getBase();
-    return current.getAnalysis();
   }
 
   @Override

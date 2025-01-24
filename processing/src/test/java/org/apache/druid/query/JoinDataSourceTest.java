@@ -265,7 +265,7 @@ public class JoinDataSourceTest
         JoinAlgorithm.BROADCAST
     );
 
-    Optional<byte[]> cacheKey = Optional.ofNullable(dataSource.getCacheKey());
+    Optional<byte[]> cacheKey = Optional.ofNullable(dataSource.getSegmentMapFunctionFactory().getCacheKey());
 
     Assert.assertTrue(cacheKey.isPresent());
   }
@@ -299,8 +299,8 @@ public class JoinDataSourceTest
         JoinAlgorithm.BROADCAST
     );
 
-    byte[] cacheKey1 = joinDataSource.getCacheKey();
-    byte[] cacheKey2 = joinDataSource1.getCacheKey();
+    byte[] cacheKey1 = joinDataSource.getSegmentMapFunctionFactory().getCacheKey();
+    byte[] cacheKey2 = joinDataSource1.getSegmentMapFunctionFactory().getCacheKey();
 
     Assert.assertNotEquals(cacheKey1.length, 0);
     Assert.assertNotEquals(cacheKey2.length, 0);
@@ -336,8 +336,8 @@ public class JoinDataSourceTest
         JoinAlgorithm.BROADCAST
     );
 
-    byte[] cacheKey1 = joinDataSource.getCacheKey();
-    byte[] cacheKey2 = joinDataSource1.getCacheKey();
+    byte[] cacheKey1 = joinDataSource.getSegmentMapFunctionFactory().getCacheKey();
+    byte[] cacheKey2 = joinDataSource1.getSegmentMapFunctionFactory().getCacheKey();
 
     Assert.assertNotEquals(cacheKey1.length, 0);
     Assert.assertNotEquals(cacheKey2.length, 0);
@@ -373,8 +373,8 @@ public class JoinDataSourceTest
         JoinAlgorithm.BROADCAST
     );
 
-    byte[] cacheKey1 = joinDataSource.getCacheKey();
-    byte[] cacheKey2 = joinDataSource1.getCacheKey();
+    byte[] cacheKey1 = joinDataSource.getSegmentMapFunctionFactory().getCacheKey();
+    byte[] cacheKey2 = joinDataSource1.getSegmentMapFunctionFactory().getCacheKey();
 
     Assert.assertNotEquals(cacheKey1.length, 0);
     Assert.assertNotEquals(cacheKey2.length, 0);
@@ -410,8 +410,8 @@ public class JoinDataSourceTest
         JoinAlgorithm.BROADCAST
     );
 
-    byte[] cacheKey1 = joinDataSource.getCacheKey();
-    byte[] cacheKey2 = joinDataSource1.getCacheKey();
+    byte[] cacheKey1 = joinDataSource.getSegmentMapFunctionFactory().getCacheKey();
+    byte[] cacheKey2 = joinDataSource1.getSegmentMapFunctionFactory().getCacheKey();
 
     Assert.assertNotEquals(cacheKey1.length, 0);
     Assert.assertNotEquals(cacheKey2.length, 0);
@@ -447,8 +447,8 @@ public class JoinDataSourceTest
         JoinAlgorithm.BROADCAST
     );
 
-    byte[] cacheKey1 = joinDataSource.getCacheKey();
-    byte[] cacheKey2 = joinDataSource1.getCacheKey();
+    byte[] cacheKey1 = joinDataSource.getSegmentMapFunctionFactory().getCacheKey();
+    byte[] cacheKey2 = joinDataSource1.getSegmentMapFunctionFactory().getCacheKey();
 
     Assert.assertNotEquals(cacheKey1.length, 0);
     Assert.assertNotEquals(cacheKey2.length, 0);
@@ -456,7 +456,7 @@ public class JoinDataSourceTest
   }
 
   @Test
-  public void testGetAnalysisWithUnnestDS()
+  public void testGetConcreteBaseWithUnnestDS()
   {
     JoinDataSource dataSource = JoinDataSource.create(
         UnnestDataSource.create(
@@ -473,12 +473,11 @@ public class JoinDataSourceTest
         null,
         JoinAlgorithm.BROADCAST
     );
-    DataSourceAnalysis analysis = dataSource.getAnalysis();
-    Assert.assertEquals("table1", analysis.getBaseDataSource().getTableNames().iterator().next());
+    Assert.assertEquals(new TableDataSource("table1"), dataSource.getConcreteBase());
   }
 
   @Test
-  public void testGetAnalysisWithFilteredDS()
+  public void testGetConcreteBaseWithFilteredDS()
   {
     JoinDataSource dataSource = JoinDataSource.create(
         UnnestDataSource.create(
@@ -498,8 +497,7 @@ public class JoinDataSourceTest
         null,
         JoinAlgorithm.BROADCAST
     );
-    DataSourceAnalysis analysis = dataSource.getAnalysis();
-    Assert.assertEquals("table1", analysis.getBaseDataSource().getTableNames().iterator().next());
+    Assert.assertEquals(new TableDataSource("table1"), dataSource.getConcreteBase());
   }
 
   @Test
@@ -553,8 +551,8 @@ public class JoinDataSourceTest
         JoinAlgorithm.BROADCAST
     );
 
-    byte[] cacheKey1 = joinDataSource.getCacheKey();
-    byte[] cacheKey2 = joinDataSource1.getCacheKey();
+    byte[] cacheKey1 = joinDataSource.getSegmentMapFunctionFactory().getCacheKey();
+    byte[] cacheKey2 = joinDataSource1.getSegmentMapFunctionFactory().getCacheKey();
 
     Assert.assertNotEquals(cacheKey1.length, 0);
     Assert.assertNotEquals(cacheKey2.length, 0);
@@ -578,7 +576,7 @@ public class JoinDataSourceTest
         JoinAlgorithm.BROADCAST
     );
 
-    byte[] cacheKey1 = joinDataSource.getCacheKey();
+    byte[] cacheKey1 = joinDataSource.getSegmentMapFunctionFactory().getCacheKey();
     Assert.assertEquals(cacheKey1.length, 0);
   }
 

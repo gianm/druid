@@ -124,7 +124,7 @@ public class DataSourceOptimizer
         TableDataSource tableDataSource = new TableDataSource(derivativeDataSource.getName());
         final List<Interval> derivativeIntervals = remainingQueryIntervals.stream()
             .flatMap(interval -> serverView
-                .getTimeline(tableDataSource.getAnalysis())
+                .getTimeline(tableDataSource)
                 .orElseThrow(() -> new ISE("No timeline for dataSource: %s", derivativeDataSource.getName()))
                 .lookup(interval)
                 .stream()

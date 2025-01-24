@@ -23,8 +23,8 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
+import org.apache.druid.error.DruidException;
 import org.apache.druid.guice.annotations.PublicApi;
-import org.apache.druid.java.util.common.ISE;
 import org.apache.druid.query.aggregation.AggregatorFactory;
 import org.apache.druid.query.aggregation.PostAggregator;
 import org.apache.druid.query.filter.DimFilter;
@@ -149,7 +149,7 @@ public class Queries
    * {@code DataSourceAnalysis.forDataSource(query.getDataSource()).getBaseQuerySegmentSpec()} is guaranteed to return
    * either {@code new MultipleSpecificSegmentSpec(descriptors)} or empty.
    *
-   * Because {@link BaseQuery#getRunner} is implemented using {@link DataSourceAnalysis#getBaseQuerySegmentSpec}, this
+   * Because {@link BaseQuery#getRunner} is implemented using {@link DataSourceAnalysis#getInnerQuerySegmentSpec}, this
    * method will cause the runner to be a specific-segments runner.
    */
   public static <T> Query<T> withSpecificSegments(final Query<T> query, final List<SegmentDescriptor> descriptors)
@@ -164,32 +164,25 @@ public class Queries
     }
 
     // Verify preconditions and invariants, just in case.
-    final DataSource retDataSource = retVal.getDataSource();
-    final DataSourceAnalysis analysis = retDataSource.getAnalysis();
+    final DataSourceAnalysis analysis = retVal.getDataSourceAnalysis();
 
     // Sanity check: query must be based on a single table.
-    if (!analysis.getBaseTableDataSource().isPresent()) {
-      throw new ISE("Unable to apply specific segments to non-table-based dataSource[%s]", query.getDataSource());
+    if (!(analysis.getBaseDataSource() instanceof TableDataSource)) {
+      throw DruidException.defensive(
+          "Unable to apply specific segments to non-table-based dataSource[%s]",
+          query.getDataSource()
+      );
     }
 
-    if (analysis.getBaseQuerySegmentSpec().isPresent()
-        && !analysis.getBaseQuerySegmentSpec().get().equals(new MultipleSpecificSegmentSpec(descriptors))) {
+    if (!analysis.getInnerQuerySegmentSpec().equals(new MultipleSpecificSegmentSpec(descriptors))) {
       // If you see the error message below, it's a bug in either this function or in DataSourceAnalysis.
-      throw new ISE("Unable to apply specific segments to query with dataSource[%s]", query.getDataSource());
+      throw DruidException.defensive(
+          "Unable to apply specific segments to query with dataSource[%s]",
+          query.getDataSource()
+      );
     }
 
     return retVal;
-  }
-
-  /**
-   * Rewrite "query" to refer to some specific base datasource, instead of the one it currently refers to.
-   *
-   * Unlike the seemingly-similar {@link Query#withDataSource}, this will walk down the datasource tree and replace
-   * only the base datasource (in the sense defined in {@link DataSourceAnalysis}).
-   */
-  public static <T> Query<T> withBaseDataSource(final Query<T> query, final DataSource newBaseDataSource)
-  {
-    return query.withDataSource(query.getDataSource().withUpdatedDataSource(newBaseDataSource));
   }
 
   /**
@@ -202,11 +195,11 @@ public class Queries
    * inputs of the virtual column will be returned instead of the name of the virtual column itself. Therefore, the
    * returned list will never contain the names of any virtual columns.
    *
-   * @param virtualColumns    virtual columns whose inputs should be included.
-   * @param filter            optional filter whose inputs should be included.
-   * @param columns           additional columns to include. Each of these will be added to the returned set, unless it
-   *                          refers to a virtual column, in which case the virtual column inputs will be added instead.
-   * @param aggregators       aggregators whose inputs should be included.
+   * @param virtualColumns virtual columns whose inputs should be included.
+   * @param filter         optional filter whose inputs should be included.
+   * @param columns        additional columns to include. Each of these will be added to the returned set, unless it
+   *                       refers to a virtual column, in which case the virtual column inputs will be added instead.
+   * @param aggregators    aggregators whose inputs should be included.
    */
   public static Set<String> computeRequiredColumns(
       final VirtualColumns virtualColumns,
@@ -257,7 +250,10 @@ public class Queries
   {
     QueryContext context = query.context();
     if (!context.containsKey(QueryContexts.MAX_SCATTER_GATHER_BYTES_KEY)) {
-      return query.withOverriddenContext(ImmutableMap.of(QueryContexts.MAX_SCATTER_GATHER_BYTES_KEY, maxScatterGatherBytesLimit));
+      return query.withOverriddenContext(ImmutableMap.of(
+          QueryContexts.MAX_SCATTER_GATHER_BYTES_KEY,
+          maxScatterGatherBytesLimit
+      ));
     }
     context.verifyMaxScatterGatherBytes(maxScatterGatherBytesLimit);
     return query;

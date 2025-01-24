@@ -54,6 +54,7 @@ public class UnnestSegment extends WrappedSegmentReference
     if (TopNOptimizationInspector.class.equals(clazz)) {
       return (T) new SimpleTopNOptimizationInspector(filter == null);
     }
-    return super.as(clazz);
+    // TODO(gianm): no
+    return null;
   }
 }

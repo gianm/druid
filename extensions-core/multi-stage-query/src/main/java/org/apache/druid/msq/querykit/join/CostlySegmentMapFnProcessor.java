@@ -17,11 +17,12 @@
  * under the License.
  */
 
-package org.apache.druid.msq.querykit;
+package org.apache.druid.msq.querykit.join;
 
 import it.unimi.dsi.fastutil.ints.Int2IntMap;
 import it.unimi.dsi.fastutil.ints.Int2IntOpenHashMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
+import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.ints.IntIterator;
 import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import it.unimi.dsi.fastutil.ints.IntSet;
@@ -36,13 +37,16 @@ import org.apache.druid.msq.exec.WorkerMemoryParameters;
 import org.apache.druid.msq.indexing.error.BroadcastTablesTooLargeFault;
 import org.apache.druid.msq.indexing.error.MSQException;
 import org.apache.druid.msq.input.ReadableInput;
+import org.apache.druid.msq.querykit.BaseLeafFrameProcessorFactory;
 import org.apache.druid.query.DataSource;
 import org.apache.druid.query.InlineDataSource;
 import org.apache.druid.query.JoinAlgorithm;
+import org.apache.druid.query.JoinDataSource;
 import org.apache.druid.query.Query;
 import org.apache.druid.segment.ColumnValueSelector;
 import org.apache.druid.segment.Cursor;
 import org.apache.druid.segment.SegmentReference;
+import org.apache.druid.segment.join.JoinableFactory;
 import org.apache.druid.sql.calcite.planner.PlannerContext;
 
 import java.io.IOException;
@@ -50,18 +54,15 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
- * Processor that reads broadcast join data and creates a segment mapping function. The resulting segment
- * mapping function embeds the joinable data within itself, and can be applied anywhere that would otherwise have used
- * {@link org.apache.druid.query.JoinDataSource#createSegmentMapFunction(Query, AtomicLong)}.
- *
- * @see SimpleSegmentMapFnProcessor processor that creates a segment mapping function when there is no broadcast input
+ * Processor that reads broadcast join data and creates a {@link JoinableFactory} that embeds the joinable data
+ * within itself. This can be applied to a {@link JoinDataSource}
+ * using {@link JoinDataSource#withJoinableFactory(JoinableFactory)}.
  */
-public class BroadcastJoinSegmentMapFnProcessor implements FrameProcessor<Function<SegmentReference, SegmentReference>>
+public class CostlySegmentMapFnProcessor implements FrameProcessor<Function<SegmentReference, SegmentReference>>
 {
   private final Query<?> query;
   private final Int2IntMap inputNumberToProcessorChannelMap;
@@ -85,7 +86,7 @@ public class BroadcastJoinSegmentMapFnProcessor implements FrameProcessor<Functi
    * @param memoryReservedForBroadcastJoin   total bytes of frames we are permitted to use; derived from
    *                                         {@link WorkerMemoryParameters#getBroadcastBufferMemory()}
    */
-  public BroadcastJoinSegmentMapFnProcessor(
+  CostlySegmentMapFnProcessor(
       final Query<?> query,
       final Int2IntMap inputNumberToProcessorChannelMap,
       final List<ReadableFrameChannel> channels,
@@ -115,7 +116,7 @@ public class BroadcastJoinSegmentMapFnProcessor implements FrameProcessor<Functi
   /**
    * Helper that enables implementations of {@link BaseLeafFrameProcessorFactory} to set up an instance of this class.
    */
-  public static BroadcastJoinSegmentMapFnProcessor create(
+  public static CostlySegmentMapFnProcessor create(
       final Query<?> query,
       final Int2ObjectMap<ReadableInput> sideChannels,
       final long memoryReservedForBroadcastJoin
@@ -132,7 +133,7 @@ public class BroadcastJoinSegmentMapFnProcessor implements FrameProcessor<Functi
       channelReaders.add(sideChannelEntry.getValue().getChannelFrameReader());
     }
 
-    return new BroadcastJoinSegmentMapFnProcessor(
+    return new CostlySegmentMapFnProcessor(
         query,
         inputNumberToProcessorChannelMap,
         inputChannels,
@@ -157,7 +158,9 @@ public class BroadcastJoinSegmentMapFnProcessor implements FrameProcessor<Functi
   public ReturnOrAwait<Function<SegmentReference, SegmentReference>> runIncrementally(IntSet readableInputs)
   {
     if (buildBroadcastTablesIncrementally(readableInputs)) {
-      return ReturnOrAwait.returnObject(createSegmentMapFunction());
+      final BroadcastJoinableFactory joinableFactory = createBroadcastJoinableFactory();
+      final DataSource dataSource = withJoinableFactory(query.getDataSource(), joinableFactory);
+      return ReturnOrAwait.returnObject(dataSource.getSegmentMapFunctionFactory().makeFunction(query));
     } else {
       return ReturnOrAwait.awaitAny(sideChannelNumbers);
     }
@@ -169,6 +172,9 @@ public class BroadcastJoinSegmentMapFnProcessor implements FrameProcessor<Functi
     FrameProcessors.closeAll(inputChannels(), outputChannels());
   }
 
+  /**
+   * Reads a frame from a given channel, and adds its data to the appropriate entry of {@link #channelData}.
+   */
   private void addFrame(final int channelNumber, final Frame frame)
   {
     final List<Object[]> data = channelData.get(channelNumber);
@@ -191,40 +197,6 @@ public class BroadcastJoinSegmentMapFnProcessor implements FrameProcessor<Functi
     }
   }
 
-  private Function<SegmentReference, SegmentReference> createSegmentMapFunction()
-  {
-    return inlineChannelData(query.getDataSource()).createSegmentMapFunction(query, new AtomicLong());
-  }
-
-  DataSource inlineChannelData(final DataSource originalDataSource)
-  {
-    if (originalDataSource instanceof InputNumberDataSource) {
-      final int inputNumber = ((InputNumberDataSource) originalDataSource).getInputNumber();
-      if (inputNumberToProcessorChannelMap.containsKey(inputNumber)) {
-        final int channelNumber = inputNumberToProcessorChannelMap.get(inputNumber);
-
-        if (sideChannelNumbers.contains(channelNumber)) {
-          return InlineDataSource.fromIterable(
-              channelData.get(channelNumber),
-              channelReaders.get(channelNumber).signature()
-          );
-        } else {
-          return originalDataSource;
-        }
-      } else {
-        return originalDataSource;
-      }
-    } else {
-      final List<DataSource> newChildren = new ArrayList<>(originalDataSource.getChildren().size());
-
-      for (final DataSource child : originalDataSource.getChildren()) {
-        newChildren.add(inlineChannelData(child));
-      }
-
-      return originalDataSource.withChildren(newChildren);
-    }
-  }
-
   /**
    * Reads up to one frame from each readable side channel, and uses them to incrementally build up joinable
    * broadcast tables.
@@ -233,7 +205,7 @@ public class BroadcastJoinSegmentMapFnProcessor implements FrameProcessor<Functi
    *
    * @return whether side channels have been fully read
    */
-  boolean buildBroadcastTablesIncrementally(final IntSet readableInputs)
+  private boolean buildBroadcastTablesIncrementally(final IntSet readableInputs)
   {
     final IntIterator inputChannelIterator = readableInputs.iterator();
 
@@ -269,8 +241,57 @@ public class BroadcastJoinSegmentMapFnProcessor implements FrameProcessor<Functi
     return true;
   }
 
-  IntSet getSideChannelNumbers()
+  /**
+   * Creates a {@link BroadcastJoinableFactory} based on all data read so far.
+   */
+  private BroadcastJoinableFactory createBroadcastJoinableFactory()
   {
-    return sideChannelNumbers;
+    final Int2ObjectMap<InlineDataSource> inlineDataSources = new Int2ObjectOpenHashMap<>();
+
+    for (Int2IntMap.Entry inputEntry : inputNumberToProcessorChannelMap.int2IntEntrySet()) {
+      final int inputNumber = inputEntry.getIntKey();
+      final int channelNumber = inputEntry.getIntValue();
+      final InlineDataSource inlineDataSource = InlineDataSource.fromIterable(
+          channelData.get(channelNumber),
+          channelReaders.get(channelNumber).signature()
+      );
+      inlineDataSources.put(inputNumber, inlineDataSource);
+    }
+
+    return new BroadcastJoinableFactory(inlineDataSources);
+  }
+
+  /**
+   * Returns "dataSource" with all {@link JoinDataSource} decorated with a {@link DecoratedJoinableFactory}
+   * built from their pre-existing {@link JoinDataSource#getJoinableFactoryWrapper()} plus the return value
+   * from a call to {@link #createBroadcastJoinableFactory()}.
+   *
+   * @param dataSource               datasource to examine
+   * @param broadcastJoinableFactory broadcast joinable factory from {@link #createBroadcastJoinableFactory()}
+   */
+  private static DataSource withJoinableFactory(
+      final DataSource dataSource,
+      final BroadcastJoinableFactory broadcastJoinableFactory
+  )
+  {
+    final List<DataSource> children = dataSource.getChildren();
+    if (children.isEmpty()) {
+      return dataSource;
+    } else {
+      final List<DataSource> newChildren = new ArrayList<>(children.size());
+      for (DataSource child : children) {
+        newChildren.add(withJoinableFactory(child, broadcastJoinableFactory));
+      }
+      if (dataSource instanceof JoinDataSource) {
+        final JoinDataSource joinDataSource = (JoinDataSource) dataSource;
+        final DecoratedJoinableFactory decoratedJoinableFactory = new DecoratedJoinableFactory(
+            joinDataSource.getJoinableFactoryWrapper().getJoinableFactory(),
+            broadcastJoinableFactory
+        );
+        return joinDataSource.withJoinableFactory(decoratedJoinableFactory).withChildren(newChildren);
+      } else {
+        return dataSource.withChildren(newChildren);
+      }
+    }
   }
 }

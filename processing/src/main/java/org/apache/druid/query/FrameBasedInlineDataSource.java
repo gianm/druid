@@ -24,21 +24,20 @@ import org.apache.druid.frame.read.FrameReader;
 import org.apache.druid.java.util.common.IAE;
 import org.apache.druid.java.util.common.guava.Sequence;
 import org.apache.druid.java.util.common.guava.Sequences;
-import org.apache.druid.query.planning.DataSourceAnalysis;
 import org.apache.druid.segment.BaseObjectColumnValueSelector;
 import org.apache.druid.segment.ColumnSelectorFactory;
 import org.apache.druid.segment.Cursor;
 import org.apache.druid.segment.CursorBuildSpec;
 import org.apache.druid.segment.CursorHolder;
-import org.apache.druid.segment.SegmentReference;
 import org.apache.druid.segment.column.RowSignature;
+import org.apache.druid.segment.map.LeafSegmentMapFunctionFactory;
+import org.apache.druid.segment.map.SegmentMapFunctionFactory;
 
+import javax.annotation.Nullable;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -54,9 +53,8 @@ import java.util.stream.Collectors;
  */
 public class FrameBasedInlineDataSource implements DataSource
 {
-
-  final List<FrameSignaturePair> frames;
-  final RowSignature rowSignature;
+  private final List<FrameSignaturePair> frames;
+  private final RowSignature rowSignature;
 
   public FrameBasedInlineDataSource(
       List<FrameSignaturePair> frames,
@@ -170,27 +168,17 @@ public class FrameBasedInlineDataSource implements DataSource
     return true;
   }
 
+  @Nullable
   @Override
-  public Function<SegmentReference, SegmentReference> createSegmentMapFunction(Query query, AtomicLong cpuTimeAcc)
+  public DataSource getConcreteBase()
   {
-    return Function.identity();
+    return this;
   }
 
+  @Nullable
   @Override
-  public DataSource withUpdatedDataSource(DataSource newSource)
+  public SegmentMapFunctionFactory getSegmentMapFunctionFactory()
   {
-    return newSource;
-  }
-
-  @Override
-  public byte[] getCacheKey()
-  {
-    return null;
-  }
-
-  @Override
-  public DataSourceAnalysis getAnalysis()
-  {
-    return new DataSourceAnalysis(this, null, null, Collections.emptyList());
+    return new LeafSegmentMapFunctionFactory(false);
   }
 }

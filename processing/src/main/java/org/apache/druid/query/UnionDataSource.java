@@ -26,15 +26,13 @@ import com.google.common.collect.ImmutableList;
 import org.apache.druid.error.DruidException;
 import org.apache.druid.java.util.common.IAE;
 import org.apache.druid.java.util.common.ISE;
-import org.apache.druid.query.planning.DataSourceAnalysis;
-import org.apache.druid.segment.SegmentReference;
+import org.apache.druid.segment.map.LeafSegmentMapFunctionFactory;
+import org.apache.druid.segment.map.SegmentMapFunctionFactory;
 import org.apache.druid.utils.CollectionUtils;
 
-import java.util.Collections;
+import javax.annotation.Nullable;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -49,7 +47,6 @@ import java.util.stream.Collectors;
  */
 public class UnionDataSource implements DataSource
 {
-
   @JsonProperty("dataSources")
   private final List<DataSource> dataSources;
 
@@ -68,6 +65,13 @@ public class UnionDataSource implements DataSource
     return dataSources;
   }
 
+  /**
+   * Returns true if, and only if, all children are {@link TableDataSource}.
+   */
+  public boolean isTables()
+  {
+    return dataSources.stream().allMatch(dataSource -> dataSource instanceof TableDataSource);
+  }
 
   /**
    * Asserts that the children of the union are all table data sources before returning the table names
@@ -143,31 +147,22 @@ public class UnionDataSource implements DataSource
     return dataSources.stream().allMatch(DataSource::isConcrete);
   }
 
+  @Nullable
   @Override
-  public Function<SegmentReference, SegmentReference> createSegmentMapFunction(
-      Query query,
-      AtomicLong cpuTime
-  )
+  public DataSource getConcreteBase()
   {
-    return Function.identity();
+    return isConcrete() ? this : null;
   }
 
+  @Nullable
   @Override
-  public DataSource withUpdatedDataSource(DataSource newSource)
+  public SegmentMapFunctionFactory getSegmentMapFunctionFactory()
   {
-    return newSource;
-  }
-
-  @Override
-  public byte[] getCacheKey()
-  {
-    return null;
-  }
-
-  @Override
-  public DataSourceAnalysis getAnalysis()
-  {
-    return new DataSourceAnalysis(this, null, null, Collections.emptyList());
+    if (isConcrete()) {
+      return new LeafSegmentMapFunctionFactory(false);
+    } else {
+      return null;
+    }
   }
 
   @Override

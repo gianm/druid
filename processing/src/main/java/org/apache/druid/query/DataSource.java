@@ -22,16 +22,14 @@ package org.apache.druid.query;
 import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import org.apache.druid.query.planning.DataSourceAnalysis;
-import org.apache.druid.query.planning.PreJoinableClause;
 import org.apache.druid.query.policy.Policy;
-import org.apache.druid.segment.SegmentReference;
+import org.apache.druid.segment.map.SegmentMapFunctionFactory;
 
+import javax.annotation.Nullable;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -73,6 +71,8 @@ public interface DataSource
    * Returns true if queries on this dataSource are cacheable at both the result level and per-segment level.
    * Currently, dataSources that do not actually reference segments (like 'inline'), are not cacheable since cache keys
    * are always based on segment identifiers.
+   *
+   * TODO(gianm): remove?
    */
   boolean isCacheable(boolean isBroker);
 
@@ -85,6 +85,7 @@ public interface DataSource
    * {@link org.apache.druid.segment.join.Joinable} for this datasource directly. If a subquery 'inline' join is
    * required to join this datasource on the right hand side, then this value must be false for now.
    * <p>
+   *   TODO(gianm): do the bottom?
    * In the future, instead of directly using this method, the query planner and engine should consider
    * {@link org.apache.druid.segment.join.JoinableFactory#isDirectlyJoinable(DataSource)} when determining if the
    * right hand side is directly joinable, which would allow decoupling this property from joins.
@@ -92,7 +93,7 @@ public interface DataSource
   boolean isGlobal();
 
   /**
-   * Returns true if this datasource can be the base datasource of query processing.
+   * Returns true if this datasource can be the base datasource of query processing. TODO(gianm): <- doesnt match 'base' defn in analysis
    * <p>
    * Base datasources drive query processing. If the base datasource is {@link TableDataSource}, for example, queries
    * are processed in parallel on data servers. If the base datasource is {@link InlineDataSource}, queries are
@@ -101,27 +102,30 @@ public interface DataSource
    * Datasources that are *not* concrete must be pre-processed in some way before they can be processed by the main
    * query stack. For example, {@link QueryDataSource} must be executed first and substituted with its results.
    *
+   * TODO(gianm): define "concrete" more precisely
+   *   i think what's useful is if "concrete" is defined as "can be run by single query". meaning that's
+   *   table, inline, lookup, etc, plus wrappers like union/unnest/filter/join.
+   *
    * @see DataSourceAnalysis#isConcreteBased() which uses this
    * @see DataSourceAnalysis#isConcreteAndTableBased() which uses this
    */
   boolean isConcrete();
 
   /**
-   * Returns a segment function on to how to segment should be modified.
+   * For concrete datasources, unwraps the base datasource. The base datasource is the one that the
+   * {@link #getSegmentMapFunctionFactory()} would apply to.
    *
-   * @param query      the input query
-   * @param cpuTimeAcc the cpu time accumulator
-   * @return the segment function
+   * @return base if {@link #isConcrete()}, null otherwise. May be this same datasource if it is a base already.
    */
-  Function<SegmentReference, SegmentReference> createSegmentMapFunction(Query query, AtomicLong cpuTimeAcc);
+  @Nullable
+  DataSource getConcreteBase();
 
   /**
-   * Returns an updated datasource based on the specified new source.
-   *
-   * @param newSource the new datasource to be used to update an existing query
-   * @return the updated datasource to be used
+   * Returns segment mapping functions that should be applied to segments from {@link #getConcreteBase()} at query time.
+   * Returns nonnull if, and only if, {@link #isConcrete()}.
    */
-  DataSource withUpdatedDataSource(DataSource newSource);
+  @Nullable
+  SegmentMapFunctionFactory getSegmentMapFunctionFactory();
 
   /**
    * Returns the query with an updated datasource based on the policy restrictions on tables.
@@ -145,24 +149,4 @@ public interface DataSource
                                     .collect(Collectors.toList());
     return this.withChildren(children);
   }
-
-  /**
-   * Compute a cache key prefix for a data source. This includes the data sources that participate in the RHS of a
-   * join as well as any query specific constructs associated with join data source such as base table filter. This key prefix
-   * can be used in segment level cache or result level cache. The function can return following
-   * - Non-empty byte array - If there is join datasource involved and caching is possible. The result includes
-   * join condition expression, join type and cache key returned by joinable factory for each {@link PreJoinableClause}
-   * - NULL - There is a join but caching is not possible. It may happen if one of the participating datasource
-   * in the JOIN is not cacheable.
-   *
-   * @return the cache key to be used as part of query cache key
-   */
-  byte[] getCacheKey();
-
-  /**
-   * Get the analysis for a data source
-   *
-   * @return The {@link DataSourceAnalysis} object for the callee data source
-   */
-  DataSourceAnalysis getAnalysis();
 }
