@@ -21,13 +21,10 @@ package org.apache.druid.segment;
 
 import com.google.common.base.Supplier;
 import com.google.common.base.Suppliers;
+import org.apache.druid.common.asyncresource.AsyncResources;
 import org.apache.druid.error.DruidException;
-import org.apache.druid.java.util.common.io.Closer;
-import org.apache.druid.query.Order;
 import org.apache.druid.query.OrderBy;
 import org.apache.druid.query.aggregation.AggregatorFactory;
-import org.apache.druid.query.dimension.DimensionSpec;
-import org.apache.druid.query.filter.Filter;
 import org.apache.druid.segment.column.ColumnCapabilities;
 import org.apache.druid.segment.column.ColumnHolder;
 import org.apache.druid.segment.column.ColumnType;
@@ -36,28 +33,19 @@ import org.apache.druid.segment.data.Offset;
 import org.apache.druid.segment.projections.ClusterGroupQueryPlan;
 import org.apache.druid.segment.projections.ClusteredColumnInspector;
 import org.apache.druid.segment.projections.ClusteredValueGroupsBaseTableSchema;
-import org.apache.druid.segment.projections.ClusteringColumnSelectorFactory;
-import org.apache.druid.segment.projections.ClusteringVectorColumnSelectorFactory;
 import org.apache.druid.segment.projections.Projections;
 import org.apache.druid.segment.projections.QueryableProjection;
 import org.apache.druid.segment.projections.TableClusterGroupSpec;
-import org.apache.druid.segment.vector.ConcatenatingVectorCursor;
-import org.apache.druid.segment.vector.MultiValueDimensionVectorSelector;
-import org.apache.druid.segment.vector.ReadableVectorInspector;
 import org.apache.druid.segment.vector.RemapVectorColumnSelectorFactory;
-import org.apache.druid.segment.vector.SingleValueDimensionVectorSelector;
 import org.apache.druid.segment.vector.VectorColumnSelectorFactory;
-import org.apache.druid.segment.vector.VectorCursor;
-import org.apache.druid.segment.vector.VectorObjectSelector;
 import org.apache.druid.segment.vector.VectorOffset;
-import org.apache.druid.segment.vector.VectorValueSelector;
-import org.apache.druid.utils.CloseableUtils;
 
 import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 
 public class QueryableIndexCursorFactory implements ResidentCursorFactory
 {
@@ -65,13 +53,30 @@ public class QueryableIndexCursorFactory implements ResidentCursorFactory
   private final TimeBoundaryInspector timeBoundaryInspector;
 
   /**
+   * Cluster group this factory is restricted to, or null if it covers the whole index. See {@link #forClusterGroup}.
+   */
+  @Nullable
+  private final TableClusterGroupSpec clusterGroup;
+
+  /**
+   * How cursors treat specs that match one of the index's aggregate projections. A factory that covers the whole index
+   * serves them.
+   */
+  private final ClusterGroupView.ProjectionRole projectionRole;
+
+  /**
+   * Capabilities of the columns of {@link #clusterGroup}. Null if {@link #clusterGroup} is null.
+   */
+  @Nullable
+  private final Supplier<ColumnInspector> clusterGroupInspector;
+
+  /**
    * Constructor that accepts a {@link QueryableIndexTimeBoundaryInspector} that is in use elsewhere, promoting
    * efficient re-use.
    */
   public QueryableIndexCursorFactory(QueryableIndex index, TimeBoundaryInspector timeBoundaryInspector)
   {
-    this.index = index;
-    this.timeBoundaryInspector = timeBoundaryInspector;
+    this(index, timeBoundaryInspector, null, ClusterGroupView.ProjectionRole.SERVES);
   }
 
   /**
@@ -82,22 +87,136 @@ public class QueryableIndexCursorFactory implements ResidentCursorFactory
     this(index, QueryableIndexTimeBoundaryInspector.create(index));
   }
 
+  private QueryableIndexCursorFactory(
+      QueryableIndex index,
+      TimeBoundaryInspector timeBoundaryInspector,
+      @Nullable TableClusterGroupSpec clusterGroup,
+      ClusterGroupView.ProjectionRole projectionRole
+  )
+  {
+    this.index = index;
+    this.timeBoundaryInspector = timeBoundaryInspector;
+    this.clusterGroup = clusterGroup;
+    this.projectionRole = projectionRole;
+    this.clusterGroupInspector =
+        clusterGroup == null ? null : Suppliers.memoize(() -> index.getClusterGroupColumnInspector(clusterGroup));
+  }
+
+  /**
+   * Returns a factory for a {@link ClusterGroupSegment}, which reads only {@code group} of the clustered {@code index}.
+   * Its capabilities are the group's own, unless it serves projections, whose cursors read every group.
+   */
+  public static QueryableIndexCursorFactory forClusterGroup(
+      QueryableIndex index,
+      TimeBoundaryInspector timeBoundaryInspector,
+      TableClusterGroupSpec group,
+      ClusterGroupView.ProjectionRole projectionRole
+  )
+  {
+    if (index.getClusteredBaseSummary() == null) {
+      throw DruidException.defensive("Cannot restrict a non-clustered index to a cluster group");
+    }
+    return new QueryableIndexCursorFactory(index, timeBoundaryInspector, group, projectionRole);
+  }
+
+  /**
+   * Whether this factory was created by {@link #forClusterGroup}.
+   */
+  public boolean isClusterGroup()
+  {
+    return clusterGroup != null;
+  }
+
+  /**
+   * Returns how this factory treats specs that match one of the index's aggregate projections.
+   */
+  public ClusterGroupView.ProjectionRole getProjectionRole()
+  {
+    return projectionRole;
+  }
+
+  /**
+   * Returns the aggregate projection that {@code spec} matches, or null if it matches none, or if this factory ignores
+   * projections.
+   */
+  @Nullable
+  public QueryableProjection<QueryableIndex> matchProjection(CursorBuildSpec spec)
+  {
+    return projectionRole == ClusterGroupView.ProjectionRole.IGNORES ? null : index.getProjection(spec);
+  }
+
+  /**
+   * Returns the views of {@code segment}, a segment over this factory's index, that are needed to answer {@code spec},
+   * or any spec if it is null; see {@link SegmentViewFetcher}. The views are resident, so they are ready immediately
+   * and fetch nothing.
+   */
+  public List<AcquiredView> acquireViews(Segment segment, @Nullable CursorBuildSpec spec)
+  {
+    final ViewPlan plan = planViews(spec);
+    if (plan.projection() != null) {
+      return List.of(
+          residentView(new AggregateProjectionSegment(segment, QueryableIndex.class, plan.projection().getRowSelector()))
+      );
+    } else if (plan.clusterGroups() != null) {
+      final List<AcquiredView> retVal = new ArrayList<>(plan.clusterGroups().size());
+      for (ClusterGroupView clusterGroup : plan.clusterGroups()) {
+        retVal.add(
+            residentView(
+                new ClusterGroupSegment(
+                    segment,
+                    clusterGroup,
+                    forClusterGroup(index, timeBoundaryInspector, clusterGroup.group(), clusterGroup.projectionRole()),
+                    () -> new QueryableIndexPhysicalSegmentInspector(
+                        index.getClusterGroupQueryableIndex(clusterGroup.group(), true)
+                    ),
+                    QueryableIndex.class,
+                    () -> index.getClusterGroupQueryableIndex(clusterGroup.group(), true)
+                )
+            )
+        );
+      }
+      return retVal;
+    } else {
+      return List.of(residentView(new ReferenceCountedSegmentProvider.UnmanagedReference(segment)));
+    }
+  }
+
+  /**
+   * Resolves the views of this factory's index that are needed to answer {@code spec}: the aggregate projection that
+   * matches it, or else the cluster groups that it does not rule out, or else the base table. If {@code spec} is null,
+   * the views can answer any spec: every cluster group, or else the base table. The factory must cover the whole index.
+   */
+  ViewPlan planViews(@Nullable CursorBuildSpec spec)
+  {
+    if (clusterGroup != null) {
+      throw DruidException.defensive("Cannot plan views of a single cluster group");
+    }
+
+    final QueryableProjection<QueryableIndex> projection = spec == null ? null : index.getProjection(spec);
+    if (projection != null) {
+      return new ViewPlan(projection, null);
+    } else if (index.getClusteredBaseSummary() == null) {
+      return new ViewPlan(null, null);
+    } else if (spec == null) {
+      return new ViewPlan(
+          null,
+          ClusterGroupView.forAllGroups(
+              index.getClusterGroupSchemas(),
+              ClusterGroupView.hasProjections(index.getMetadata())
+          )
+      );
+    } else {
+      return new ViewPlan(
+          null,
+          ClusterGroupView.forSurvivingGroups(index.getClusterGroupSchemas(), planClusterGroups(spec).survivingGroups())
+      );
+    }
+  }
+
   @Override
   public CursorHolder makeCursorHolder(CursorBuildSpec spec)
   {
-    QueryableProjection<QueryableIndex> projection = index.getProjection(spec);
-    if (projection != null) {
-      return makeAggregateProjectionCursorHolder(spec, projection);
-    }
-
-    // Cluster-group dispatch runs after aggregate-projection match, before the regular base-table fallback
-    final ClusteredValueGroupsBaseTableSchema clusterSummary = index.getClusteredBaseSummary();
-    if (clusterSummary != null) {
-      return makeClusteredCursorHolder(spec);
-    }
-
-    // No projections, no clustering, regular full-segment cursor.
-    return new QueryableIndexCursorHolder(index, spec, timeBoundaryInspector);
+    return makeCursorHolderForProjection(spec, matchProjection(spec));
   }
 
   public CursorHolder makeCursorHolderForProjection(
@@ -106,13 +225,17 @@ public class QueryableIndexCursorFactory implements ResidentCursorFactory
   )
   {
     if (projection != null) {
+      if (projectionRole == ClusterGroupView.ProjectionRole.DEFERS) {
+        // Another group of this index serves the projection, which spans every group.
+        return EmptyCursorHolder.forSpec(spec, this);
+      }
       return makeAggregateProjectionCursorHolder(spec, projection);
     }
 
     // Cluster-group dispatch runs after aggregate-projection match, before the regular base-table fallback
     final ClusteredValueGroupsBaseTableSchema clusterSummary = index.getClusteredBaseSummary();
     if (clusterSummary != null) {
-      return makeClusteredCursorHolder(spec);
+      return makeClusteredCursorHolder(spec, planClusterGroups(spec));
     }
 
     // No projections, no clustering, regular full-segment cursor.
@@ -120,20 +243,38 @@ public class QueryableIndexCursorFactory implements ResidentCursorFactory
   }
 
   /**
+   * Plans the cluster groups this factory covers (all of them, or just its {@link #forClusterGroup} group) against
+   * {@code spec}. The index must be clustered.
+   */
+  public ClusterGroupQueryPlan planClusterGroups(CursorBuildSpec spec)
+  {
+    return Projections.planClusterGroupQuery(
+        clusterGroup != null ? List.of(clusterGroup) : new ArrayList<>(index.getClusterGroupSchemas()),
+        spec
+    );
+  }
+
+  /**
    * Build a clustered-base-table cursor holder from an already-computed {@link ClusterGroupQueryPlan}. Exposed so the
    * partial (on-demand) cursor factory can plan the cluster groups once — to decide which group bundles to download —
    * and reuse the same plan to build the holder, rather than re-running {@link Projections#planClusterGroupQuery}.
+   * <p>
+   * A cursor spans at most one cluster group, since groups do not share dictionaries. Unless this factory is restricted
+   * to one group, it refuses indexes with more than one group unless {@code plan} rules out all of them, so callers
+   * that do not read one view per group from {@link SegmentViewFetcher} fail even if their filters leave one group.
    */
   public CursorHolder makeClusteredCursorHolder(CursorBuildSpec spec, ClusterGroupQueryPlan plan)
   {
-    if (plan.survivingGroups().isEmpty()) {
+    final List<TableClusterGroupSpec> survivingGroups = plan.survivingGroups();
+    if (survivingGroups.isEmpty()) {
       return EmptyCursorHolder.forSpec(spec, this);
+    } else if (clusterGroup == null && index.getClusterGroupSchemas().size() > 1) {
+      throw DruidException.defensive(
+          "Cannot build a cursor over a segment with [%d] cluster groups; split it into cluster groups first",
+          index.getClusterGroupSchemas().size()
+      );
     }
-
-    if (plan.survivingGroups().size() == 1) {
-      return makeSingleGroupClusteredCursorHolder(spec, plan, plan.survivingGroups().getFirst());
-    }
-    return makeMultiGroupClusteredCursorHolder(spec, plan);
+    return makeSingleGroupClusteredCursorHolder(spec, plan, survivingGroups.getFirst());
   }
 
   @Override
@@ -141,7 +282,10 @@ public class QueryableIndexCursorFactory implements ResidentCursorFactory
   {
     final ClusteredValueGroupsBaseTableSchema clusterSummary = index.getClusteredBaseSummary();
     if (clusterSummary != null) {
-      return getClusteredRowSignature(clusterSummary);
+      return getClusteredRowSignature(
+          clusterSummary,
+          clusterGroupInspector != null ? clusterGroupInspector.get() : index
+      );
     }
 
     final LinkedHashSet<String> columns = new LinkedHashSet<>();
@@ -172,15 +316,10 @@ public class QueryableIndexCursorFactory implements ResidentCursorFactory
   @Override
   public ColumnCapabilities getColumnCapabilities(String column)
   {
+    if (clusterGroupInspector != null && projectionRole != ClusterGroupView.ProjectionRole.SERVES) {
+      return clusterGroupInspector.get().getColumnCapabilities(column);
+    }
     return index.getColumnCapabilities(column);
-  }
-
-  private CursorHolder makeClusteredCursorHolder(CursorBuildSpec spec)
-  {
-    return makeClusteredCursorHolder(
-        spec,
-        Projections.planClusterGroupQuery(new ArrayList<>(index.getClusterGroupSchemas()), spec)
-    );
   }
 
   private CursorHolder makeSingleGroupClusteredCursorHolder(
@@ -204,15 +343,7 @@ public class QueryableIndexCursorFactory implements ResidentCursorFactory
         spec.getVirtualColumns()
     );
 
-    if (plan.virtualColumnRemap().isEmpty()) {
-      return new QueryableIndexCursorHolder(
-          groupIndex,
-          plan.rebuildCursorBuildSpec(spec, valueGroup),
-          QueryableIndexTimeBoundaryInspector.create(groupIndex),
-          ordering
-      );
-    }
-
+    final Map<String, String> remap = plan.virtualColumnRemap();
     return new QueryableIndexCursorHolder(
         groupIndex,
         plan.rebuildCursorBuildSpec(spec, valueGroup),
@@ -226,10 +357,8 @@ public class QueryableIndexCursorFactory implements ResidentCursorFactory
           Offset baseOffset
       )
       {
-        return new RemapColumnSelectorFactory(
-            super.makeColumnSelectorFactoryForOffset(columnCache, baseOffset),
-            plan.virtualColumnRemap()
-        );
+        final ColumnSelectorFactory factory = super.makeColumnSelectorFactoryForOffset(columnCache, baseOffset);
+        return remap.isEmpty() ? factory : new RemapColumnSelectorFactory(factory, remap);
       }
 
       @Override
@@ -238,81 +367,11 @@ public class QueryableIndexCursorFactory implements ResidentCursorFactory
           VectorOffset baseOffset
       )
       {
-        return new RemapVectorColumnSelectorFactory(
-            super.makeVectorColumnSelectorFactoryForOffset(columnCache, baseOffset),
-            plan.virtualColumnRemap()
-        );
+        final VectorColumnSelectorFactory factory =
+            super.makeVectorColumnSelectorFactoryForOffset(columnCache, baseOffset);
+        return remap.isEmpty() ? factory : new RemapVectorColumnSelectorFactory(factory, remap);
       }
     };
-  }
-
-  /**
-   * Build a cursor holder that walks multiple matching cluster groups back-to-back via
-   * {@link ConcatenatingCursor}. Each per-group {@link CursorHolder} is built lazily inside the cursor's group
-   * transition, so a query that finishes early (e.g., LIMIT-bounded) doesn't open every group's offset.
-   */
-  private CursorHolder makeMultiGroupClusteredCursorHolder(
-      CursorBuildSpec spec,
-      ClusterGroupQueryPlan plan
-  )
-  {
-    final List<TableClusterGroupSpec> matching = plan.survivingGroups();
-    // All matching specs share the same parent summary (they came out of one segment); grab a reference for
-    // getOrdering() and clusteringColumns below.
-    final ClusteredValueGroupsBaseTableSchema clusterSummary = matching.get(0).getSummary();
-    final RowSignature clusteringColumns = clusterSummary.getClusteringColumns();
-    final List<Object[]> clusteringValuesByGroup = new ArrayList<>(matching.size());
-    final List<Supplier<CursorHolder>> holderSuppliers = new ArrayList<>(matching.size());
-    // lifecycle management closer for per-group CursorHolders
-    final Closer closer = Closer.create();
-    for (TableClusterGroupSpec valueGroup : matching) {
-      clusteringValuesByGroup.add(valueGroup.lookupClusteringValues());
-      final QueryableIndex groupIndex = index.getClusterGroupQueryableIndex(valueGroup, true);
-      if (groupIndex == null) {
-        throw DruidException.defensive(
-            "No cluster-group sub-index resolvable for clustering values "
-            + Arrays.toString(valueGroup.lookupClusteringValues())
-        );
-      }
-      final CursorBuildSpec groupSpec = plan.rebuildCursorBuildSpec(spec, valueGroup);
-      holderSuppliers.add(
-          Suppliers.memoize(
-              () -> closer.register(
-                  new QueryableIndexCursorHolder(
-                      groupIndex,
-                      groupSpec,
-                      QueryableIndexTimeBoundaryInspector.create(groupIndex)
-                  )
-              )
-          )
-      );
-    }
-
-    // Use k-way merged group cursors for time ordering, or concatenated cursors otherwise.
-    if (Projections.useTimeOrderedCursors(spec, clusterSummary)) {
-      final boolean descending = Cursors.getTimeOrdering(spec.getPreferredOrdering()) == Order.DESCENDING;
-      return MergingClusterGroupCursor.makeCursorHolder(
-          holderSuppliers,
-          clusteringColumns,
-          clusteringValuesByGroup,
-          descending,
-          spec.getVirtualColumns(),
-          this,
-          plan.virtualColumnRemap(),
-          closer
-      );
-    }
-
-    return makeConcatenatedClusteredCursorHolder(
-        spec,
-        plan,
-        this,
-        clusteringColumns,
-        clusteringValuesByGroup,
-        holderSuppliers,
-        clusterSummary,
-        closer
-    );
   }
 
   /**
@@ -320,8 +379,14 @@ public class QueryableIndexCursorFactory implements ResidentCursorFactory
    *   - the summary's clustering {@link RowSignature} for clustering columns;
    *   - the cluster groups' column descriptors for everything else, combined across groups by
    *     {@link ClusteredColumnInspector}.
+   * <p>
+   * Types come from {@code inspector}, so a factory created by {@link #forClusterGroup} reports only the columns of
+   * its own group.
    */
-  private RowSignature getClusteredRowSignature(ClusteredValueGroupsBaseTableSchema clusterSummary)
+  private static RowSignature getClusteredRowSignature(
+      ClusteredValueGroupsBaseTableSchema clusterSummary,
+      ColumnInspector inspector
+  )
   {
     final LinkedHashSet<String> columns = new LinkedHashSet<>();
 
@@ -333,7 +398,7 @@ public class QueryableIndexCursorFactory implements ResidentCursorFactory
 
     final RowSignature.Builder builder = RowSignature.builder();
     for (final String column : columns) {
-      final ColumnType columnType = ColumnType.fromCapabilities(index.getColumnCapabilities(column));
+      final ColumnType columnType = ColumnType.fromCapabilities(inspector.getColumnCapabilities(column));
       if (columnType != null) {
         builder.add(column, columnType);
       }
@@ -395,149 +460,19 @@ public class QueryableIndexCursorFactory implements ResidentCursorFactory
     };
   }
 
-  /**
-   * Builds a {@link CursorHolder} that concatenates cluster group cursors together.
-   */
-  private static CursorHolder makeConcatenatedClusteredCursorHolder(
-      CursorBuildSpec spec,
-      ClusterGroupQueryPlan plan,
-      ColumnInspector inspector,
-      RowSignature clusteringColumns,
-      List<Object[]> clusteringValuesByGroup,
-      List<Supplier<CursorHolder>> holderSuppliers,
-      ClusteredValueGroupsBaseTableSchema clusterSummary,
-      Closer closer
-  )
+  private static AcquiredView residentView(Segment view)
   {
-    // Initial wrapper state uses the first group's clustering values + a throwing placeholder delegate. The
-    // ConcatenatingCursor immediately calls setDelegate on init (before any selector is exposed).
-    final int vectorSize = spec.getQueryContext().getVectorSize();
-    final ClusteringColumnSelectorFactory wrapperFactory = new ClusteringColumnSelectorFactory(
-        ClusteringColumnSelectorFactory.UNINITIALIZED_DELEGATE,
-        clusteringColumns,
-        clusteringValuesByGroup.get(0),
-        spec.getVirtualColumns(),
-        inspector
-    );
-    final ClusteringVectorColumnSelectorFactory vectorWrapperFactory = new ClusteringVectorColumnSelectorFactory(
-        UNINITIALIZED_VECTOR_DELEGATE,
-        clusteringColumns,
-        clusteringValuesByGroup.get(0),
-        vectorSize,
-        spec.getVirtualColumns(),
-        inspector
-    );
-
-    final ConcatenatingCursor cursor = new ConcatenatingCursor(
-        holderSuppliers,
-        clusteringValuesByGroup,
-        wrapperFactory,
-        plan.virtualColumnRemap()
-    );
-    final ConcatenatingVectorCursor vectorCursor = new ConcatenatingVectorCursor(
-        holderSuppliers,
-        clusteringValuesByGroup,
-        vectorWrapperFactory,
-        plan.virtualColumnRemap()
-    );
-
-    // each group gets a different rewritten filter, so the conservative thing to do here is require the original query
-    // filter's value matcher to be vectorizable. This works because every per-group filter is a sub-structure of the
-    // original filter (clustering leaves fold to constant TRUE/FALSE, other leaves pass through unchanged)
-    final Filter queryFilter = spec.getFilter();
-    final boolean filterCanVectorize =
-        queryFilter == null || queryFilter.canVectorizeMatcher(spec.getVirtualColumns().wrapInspector(inspector));
-    // we still check that the first holder is vectorizable to make sure all the non-filter parts can be vectorized,
-    // and also check virtual columns and aggregators against every group's columns, since the first group's may not
-    // hold for the others (e.g. a column may have multiple values in only some groups)
-    final boolean canVectorize = filterCanVectorize
-                                 && QueryableIndexCursorHolder.canVectorizeVirtualColumnsAndAggregators(
-                                     spec.getVirtualColumns(),
-                                     spec.getAggregators(),
-                                     spec.getQueryContext(),
-                                     inspector
-                                 )
-                                 && holderSuppliers.getFirst().get().canVectorize();
-
-    return new CursorHolder()
-    {
-      @Override
-      public Cursor asCursor()
-      {
-        return cursor;
-      }
-
-      @Override
-      public VectorCursor asVectorCursor()
-      {
-        return vectorCursor;
-      }
-
-      @Override
-      public boolean canVectorize()
-      {
-        return canVectorize;
-      }
-
-      @Override
-      public List<OrderBy> getOrdering()
-      {
-        // Cluster groups are written in clustering-value order (writer-enforced; see ClusteredValueGroupsBaseTableSchema),
-        // and within each group rows are sorted by the segment ordering's tail (clustering prefix dropped). So
-        // back-to-back walking yields rows in the full segment ordering; the writer-side contract makes the
-        // concatenation order-preserving without any merge work at read time.
-        return Cursors.trimOrdering(clusterSummary.getOrdering(), spec.getVirtualColumns());
-      }
-
-      @Override
-      public void close()
-      {
-        CloseableUtils.closeAndWrapExceptions(closer);
-      }
-    };
+    return new AcquiredView(AsyncResources.unmanaged(view), 0);
   }
 
   /**
-   * Vector counterpart of {@link ClusteringColumnSelectorFactory#UNINITIALIZED_DELEGATE}. Replaced by
-   * {@link ConcatenatingVectorCursor}'s lazy init before the wrapper is exposed.
+   * Result of {@link #planViews}: the matched aggregate projection, or else the cluster groups to read, or else (both
+   * null) the base table.
    */
-  private static final VectorColumnSelectorFactory UNINITIALIZED_VECTOR_DELEGATE = new VectorColumnSelectorFactory()
+  record ViewPlan(
+      @Nullable QueryableProjection<QueryableIndex> projection,
+      @Nullable List<ClusterGroupView> clusterGroups
+  )
   {
-    @Override
-    public ReadableVectorInspector getReadableVectorInspector()
-    {
-      throw DruidException.defensive("ConcatenatingVectorCursor delegate accessed before initialization");
-    }
-
-    @Override
-    public SingleValueDimensionVectorSelector makeSingleValueDimensionSelector(DimensionSpec dimensionSpec)
-    {
-      throw DruidException.defensive("ConcatenatingVectorCursor delegate accessed before initialization");
-    }
-
-    @Override
-    public MultiValueDimensionVectorSelector makeMultiValueDimensionSelector(DimensionSpec dimensionSpec)
-    {
-      throw DruidException.defensive("ConcatenatingVectorCursor delegate accessed before initialization");
-    }
-
-    @Override
-    public VectorValueSelector makeValueSelector(String column)
-    {
-      throw DruidException.defensive("ConcatenatingVectorCursor delegate accessed before initialization");
-    }
-
-    @Override
-    public VectorObjectSelector makeObjectSelector(String column)
-    {
-      throw DruidException.defensive("ConcatenatingVectorCursor delegate accessed before initialization");
-    }
-
-    @Nullable
-    @Override
-    public ColumnCapabilities getColumnCapabilities(String column)
-    {
-      return null;
-    }
-  };
+  }
 }

@@ -33,7 +33,9 @@ import org.apache.druid.segment.column.ColumnCapabilities;
 import org.apache.druid.segment.column.ColumnConfig;
 import org.apache.druid.segment.column.ColumnDescriptor;
 import org.apache.druid.segment.column.ColumnHolder;
+import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.column.ConstantColumns;
+import org.apache.druid.segment.column.RowSignature;
 import org.apache.druid.segment.data.Indexed;
 import org.apache.druid.segment.data.ListIndexed;
 import org.apache.druid.segment.file.PartialSegmentFileMapperV10;
@@ -358,7 +360,7 @@ public class PartialQueryableIndex implements QueryableIndex
    * {@link #getProjection} restricted to the projections whose bundle {@code servableBundles} accepts.
    */
   @Nullable
-  private QueryableProjection<QueryableIndex> getServableProjection(
+  QueryableProjection<QueryableIndex> getServableProjection(
       CursorBuildSpec cursorBuildSpec,
       Predicate<String> servableBundles
   )
@@ -465,8 +467,8 @@ public class PartialQueryableIndex implements QueryableIndex
   /**
    * Returns a {@link QueryableIndex} sub-view scoped to a single cluster group's column data, The per-group column
    * suppliers are memoized by group index so a pre-fetch (async path) and the later cursor build share the same
-   * already-downloaded columns. Clustering columns are NOT present in the returned index; they are injected at the
-   * cursor-factory level via {@code ClusteringColumnSelectorFactory}.
+   * already-downloaded columns. Clustering columns are present as constant columns only if
+   * {@code withClusteringColumns}.
    */
   @Override
   public QueryableIndex getClusterGroupQueryableIndex(TableClusterGroupSpec groupSpec, boolean withClusteringColumns)
@@ -537,6 +539,28 @@ public class PartialQueryableIndex implements QueryableIndex
   }
 
   /**
+   * Answers from the segment file metadata rather than the group's columns, so capabilities are available before
+   * those columns are downloaded.
+   */
+  @Override
+  public ColumnInspector getClusterGroupColumnInspector(TableClusterGroupSpec groupSpec)
+  {
+    if (clusteredBaseSummary == null) {
+      throw DruidException.defensive("getClusterGroupColumnInspector called on a non-clustered segment");
+    }
+    final RowSignature clusteringColumns = clusteredBaseSummary.getClusteringColumns();
+    final String groupPrefix = Projections.getClusterGroupSegmentInternalFilePrefix(groupSpec.getClusteringValueIds());
+    return column -> {
+      final ColumnType clusteringType = clusteringColumns.getColumnType(column).orElse(null);
+      if (clusteringType != null) {
+        return ClusteredColumnInspector.clusteringColumnCapabilities(clusteringType);
+      }
+      final ColumnDescriptor descriptor = metadata.getColumnDescriptors().get(groupPrefix + column);
+      return descriptor == null ? null : ClusteredColumnInspector.capabilitiesFromDescriptor(column, descriptor);
+    };
+  }
+
+  /**
    * Plan the downloads a {@link CursorBuildSpec} needs: resolve which row selector serves the spec (matched
    * aggregate projection, surviving cluster groups, or the base table), compute each selector's required columns,
    * and plan the coalesced range reads that make them resident. The returned plan carries the dispatch result so the
@@ -560,30 +584,13 @@ public class PartialQueryableIndex implements QueryableIndex
                                                         ? getProjection(spec)
                                                         : getServableProjection(spec, servableBundles);
     if (matched == null && clusteredBaseSummary != null) {
-      // Clustered base table: metadata-only group resolution; only the groups whose clustering tuples survive the
-      // query's filters plan any downloads, one bundle per surviving group.
       final List<TableClusterGroupSpec> candidateGroups = new ArrayList<>(getClusterGroupSchemas());
       if (servableBundles != null) {
         candidateGroups.removeIf(
             group -> !servableBundles.test(Projections.getClusterGroupBundleName(group.getClusteringValueIds()))
         );
       }
-      final ClusterGroupQueryPlan clusterGroupPlan = Projections.planClusterGroupQuery(candidateGroups, spec);
-      final List<PrefetchBundle> bundles = new ArrayList<>(clusterGroupPlan.survivingGroups().size());
-      for (TableClusterGroupSpec group : clusterGroupPlan.survivingGroups()) {
-        final QueryableIndex groupIndex = getClusterGroupQueryableIndex(group, true);
-        final CursorBuildSpec groupSpec = clusterGroupPlan.rebuildCursorBuildSpec(spec, group);
-        final Set<String> required = requiredColumns(groupIndex, null, groupSpec);
-        bundles.add(
-            new PrefetchBundle(
-                Projections.getClusterGroupBundleName(group.getClusteringValueIds()),
-                groupIndex,
-                required,
-                () -> planClusterGroupPrefetch(group, required)
-            )
-        );
-      }
-      return new CursorPrefetchPlan(null, clusterGroupPlan, bundles);
+      return planClusterGroupCursorPrefetch(spec, Projections.planClusterGroupQuery(candidateGroups, spec));
     }
 
     // Aggregate-projection match, or the plain base table: the selector's bundle with the query's required columns,
@@ -627,6 +634,29 @@ public class PartialQueryableIndex implements QueryableIndex
       }
     }
     return new CursorPrefetchPlan(matched, null, bundles);
+  }
+
+  /**
+   * Plan the downloads for the cluster groups that survive {@code clusterGroupPlan}, which must have been planned
+   * against {@code spec}. Resolution is metadata-only; each surviving group plans one bundle.
+   */
+  CursorPrefetchPlan planClusterGroupCursorPrefetch(CursorBuildSpec spec, ClusterGroupQueryPlan clusterGroupPlan)
+  {
+    final List<PrefetchBundle> bundles = new ArrayList<>(clusterGroupPlan.survivingGroups().size());
+    for (TableClusterGroupSpec group : clusterGroupPlan.survivingGroups()) {
+      final QueryableIndex groupIndex = getClusterGroupQueryableIndex(group, true);
+      final CursorBuildSpec groupSpec = clusterGroupPlan.rebuildCursorBuildSpec(spec, group);
+      final Set<String> required = requiredColumns(groupIndex, null, groupSpec);
+      bundles.add(
+          new PrefetchBundle(
+              Projections.getClusterGroupBundleName(group.getClusteringValueIds()),
+              groupIndex,
+              required,
+              () -> planClusterGroupPrefetch(group, required)
+          )
+      );
+    }
+    return new CursorPrefetchPlan(null, clusterGroupPlan, bundles);
   }
 
   /**

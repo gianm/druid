@@ -23,8 +23,10 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import org.apache.druid.java.util.common.StringUtils;
+import org.apache.druid.segment.DimensionDictionarySelector;
 import org.apache.druid.segment.column.ColumnCapabilities;
 import org.apache.druid.segment.column.ColumnType;
+import org.apache.druid.segment.column.Types;
 
 import javax.annotation.Nullable;
 import java.util.Objects;
@@ -194,6 +196,71 @@ public class ColumnAnalysis
                     .withCardinality(cardinality)
                     .withMinValue(newMin)
                     .withMaxValue(newMax)
+                    .build();
+  }
+
+  /**
+   * Returns the analysis of a column of a clustered segment, given this analysis of the column in some of its cluster
+   * groups, and {@code rhs} in the others. {@code rhs} is null if the column is missing from the other groups, in which
+   * case it is null for their rows. Unlike {@link #fold}, which combines analyses of different data, differing types
+   * combine into the least restrictive type, since each group determines its own column types. Cardinality is unknown,
+   * since each group has its own dictionary.
+   */
+  public ColumnAnalysis foldClusterGroups(@Nullable ColumnAnalysis rhs)
+  {
+    if (isError()) {
+      return rhs == null || !rhs.isError() || errorMessage.equals(rhs.getErrorMessage())
+             ? this
+             : ColumnAnalysis.error("multiple_errors");
+    } else if (rhs == null) {
+      return builder().withType(typeSignature)
+                      .withTypeName(type)
+                      .hasMultipleValues(hasMultipleValues)
+                      .hasNulls(true)
+                      .withSize(size)
+                      .withCardinality(cardinality == null ? null : DimensionDictionarySelector.CARDINALITY_UNKNOWN)
+                      .withMinValue(minValue)
+                      .withMaxValue(maxValue)
+                      .build();
+    } else if (rhs.isError()) {
+      return rhs;
+    }
+
+    final ColumnType mergedType;
+    try {
+      mergedType = ColumnType.leastRestrictiveType(typeSignature, rhs.getTypeSignature());
+    }
+    catch (Types.IncompatibleTypeException e) {
+      return ColumnAnalysis.error(
+          StringUtils.format(
+              "cannot_merge_diff_types: [%s] and [%s]",
+              typeSignature.asTypeString(),
+              rhs.getTypeSignature().asTypeString()
+          )
+      );
+    }
+
+    final String mergedTypeName;
+    if (mergedType.equals(typeSignature)) {
+      mergedTypeName = type;
+    } else if (mergedType.equals(rhs.getTypeSignature())) {
+      mergedTypeName = rhs.getType();
+    } else {
+      mergedTypeName = null;
+    }
+
+    return builder().withType(mergedType)
+                    .withTypeName(mergedTypeName)
+                    .hasMultipleValues(hasMultipleValues || rhs.isHasMultipleValues())
+                    .hasNulls(hasNulls || rhs.isHasNulls())
+                    .withSize(size + rhs.getSize())
+                    .withCardinality(
+                        cardinality == null && rhs.getCardinality() == null
+                        ? null
+                        : DimensionDictionarySelector.CARDINALITY_UNKNOWN
+                    )
+                    .withMinValue(choose(minValue, rhs.minValue, false))
+                    .withMaxValue(choose(maxValue, rhs.maxValue, true))
                     .build();
   }
 

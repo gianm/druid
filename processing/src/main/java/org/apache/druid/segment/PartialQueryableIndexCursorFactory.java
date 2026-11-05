@@ -19,8 +19,10 @@
 
 package org.apache.druid.segment;
 
+import com.google.common.annotations.VisibleForTesting;
 import org.apache.druid.common.asyncresource.AsyncResource;
 import org.apache.druid.common.asyncresource.AsyncResources;
+import org.apache.druid.common.asyncresource.SettableAsyncResource;
 import org.apache.druid.error.DruidException;
 import org.apache.druid.java.util.common.io.Closer;
 import org.apache.druid.query.Order;
@@ -29,6 +31,10 @@ import org.apache.druid.query.aggregation.AggregatorFactory;
 import org.apache.druid.segment.column.ColumnCapabilities;
 import org.apache.druid.segment.column.RowSignature;
 import org.apache.druid.segment.file.PartialSegmentFileMapperV10;
+import org.apache.druid.segment.projections.ClusterGroupQueryPlan;
+import org.apache.druid.segment.projections.Projections;
+import org.apache.druid.segment.projections.QueryableProjection;
+import org.apache.druid.segment.projections.TableClusterGroupSpec;
 import org.apache.druid.segment.vector.VectorCursor;
 import org.apache.druid.utils.CloseableUtils;
 
@@ -103,10 +109,222 @@ public class PartialQueryableIndexCursorFactory implements CursorFactory
       @Nullable Predicate<String> servableBundles
   )
   {
+    this(index, new QueryableIndexCursorFactory(index, timeBoundaryInspector), bundleAcquirer, servableBundles);
+  }
+
+  private PartialQueryableIndexCursorFactory(
+      PartialQueryableIndex index,
+      QueryableIndexCursorFactory delegate,
+      PartialBundleAcquirer bundleAcquirer,
+      @Nullable Predicate<String> servableBundles
+  )
+  {
     this.index = index;
-    this.delegate = new QueryableIndexCursorFactory(index, timeBoundaryInspector);
+    this.delegate = delegate;
     this.bundleAcquirer = bundleAcquirer;
     this.servableBundles = servableBundles;
+  }
+
+  /**
+   * Returns the views of {@code segment}, a segment over this factory's index, that are needed to answer {@code spec},
+   * or any spec if it is null; see {@link SegmentViewFetcher}. Each view downloads the columns of its own rows that
+   * {@code spec} needs, or all of them if it is null, unless the whole segment is already downloaded. When restricted
+   * to {@code servableBundles}, only servable projections and cluster groups have views.
+   */
+  public List<AcquiredView> acquireViews(Segment segment, @Nullable CursorBuildSpec spec)
+  {
+    final QueryableIndexCursorFactory.ViewPlan plan =
+        servableBundles == null ? delegate.planViews(spec) : planServableViews(spec);
+    final CursorBuildSpec prefetchSpec = spec == null ? CursorBuildSpec.FULL_SCAN : spec;
+    // Restricted factories always plan downloads, since the base table bundle that a resident view would hold may not
+    // be servable.
+    if (servableBundles == null && plan.projection() == null && index.isFullyDownloaded()) {
+      final List<AcquiredView> residentViews = acquireResidentViews(segment, plan);
+      if (residentViews != null) {
+        return residentViews;
+      }
+    }
+
+    if (plan.clusterGroups() == null) {
+      // A matched projection or the base table. planCursorPrefetch matches projections the same way.
+      final Segment view =
+          plan.projection() != null
+          ? new AggregateProjectionSegment(segment, QueryableIndex.class, plan.projection().getRowSelector())
+          : new ReferenceCountedSegmentProvider.UnmanagedReference(segment);
+      return List.of(prefetchView(index.planCursorPrefetch(prefetchSpec, servableBundles).bundles(), view));
+    }
+
+    final TimeBoundaryInspector timeBoundaryInspector = segment.as(TimeBoundaryInspector.class);
+    final List<AcquiredView> retVal = new ArrayList<>(plan.clusterGroups().size());
+    try {
+      for (ClusterGroupView clusterGroup : plan.clusterGroups()) {
+        final PartialQueryableIndexCursorFactory groupFactory =
+            makeClusterGroupFactory(timeBoundaryInspector, clusterGroup);
+        // Plan nothing for an unservable group, which may still have a view, since it serves projections.
+        final List<PartialQueryableIndex.PrefetchBundle> groupBundles =
+            isServable(clusterGroup.group())
+            ? index.planClusterGroupCursorPrefetch(
+                prefetchSpec,
+                groupFactory.delegate.planClusterGroups(prefetchSpec)
+            ).bundles()
+            : List.of();
+        retVal.add(prefetchView(groupBundles, makeClusterGroupView(segment, clusterGroup, groupFactory)));
+      }
+      return retVal;
+    }
+    catch (Throwable t) {
+      throw CloseableUtils.closeAndWrapInCatch(t, closeViews(retVal));
+    }
+  }
+
+  /**
+   * Like {@link QueryableIndexCursorFactory#planViews}, but plans only over {@link #servableBundles}, which must be
+   * non-null. If {@code spec} is null, the group that serves projections keeps its view even if its own bundle is not
+   * servable, since a servable projection may match the spec its cursors use.
+   */
+  private QueryableIndexCursorFactory.ViewPlan planServableViews(@Nullable CursorBuildSpec spec)
+  {
+    if (spec == null) {
+      final QueryableIndexCursorFactory.ViewPlan plan = delegate.planViews(null);
+      if (plan.clusterGroups() == null) {
+        return plan;
+      }
+      final List<ClusterGroupView> clusterGroups = new ArrayList<>(plan.clusterGroups().size());
+      for (ClusterGroupView clusterGroup : plan.clusterGroups()) {
+        if (clusterGroup.servesProjections() || isServable(clusterGroup.group())) {
+          clusterGroups.add(clusterGroup);
+        }
+      }
+      return new QueryableIndexCursorFactory.ViewPlan(null, clusterGroups);
+    }
+
+    final PartialQueryableIndex.CursorPrefetchPlan plan = index.planCursorPrefetch(spec, servableBundles);
+    if (plan.clusterGroupPlan() != null) {
+      return new QueryableIndexCursorFactory.ViewPlan(
+          null,
+          ClusterGroupView.forSurvivingGroups(index.getClusterGroupSchemas(), plan.clusterGroupPlan().survivingGroups())
+      );
+    } else {
+      return new QueryableIndexCursorFactory.ViewPlan(plan.matchedProjection(), null);
+    }
+  }
+
+  /**
+   * Whether {@code group} is servable, meaning there is no {@link #servableBundles} restriction, or it accepts the
+   * group's bundle.
+   */
+  private boolean isServable(TableClusterGroupSpec group)
+  {
+    return servableBundles == null
+           || servableBundles.test(Projections.getClusterGroupBundleName(group.getClusteringValueIds()));
+  }
+
+  /**
+   * Returns the views of {@code plan}, which must not match a projection, without planning downloads, since the whole
+   * segment is downloaded. Each view holds its bundle until it is closed, so the bundle cannot be evicted while the
+   * view is in use. Returns null if a bundle was evicted before its hold was taken.
+   */
+  @Nullable
+  private List<AcquiredView> acquireResidentViews(Segment segment, QueryableIndexCursorFactory.ViewPlan plan)
+  {
+    final List<AcquiredView> retVal = new ArrayList<>();
+    try {
+      if (plan.clusterGroups() == null) {
+        final Segment view = new ReferenceCountedSegmentProvider.UnmanagedReference(segment);
+        retVal.add(heldView(view, Projections.BASE_TABLE_PROJECTION_NAME));
+      } else {
+        final TimeBoundaryInspector timeBoundaryInspector = segment.as(TimeBoundaryInspector.class);
+        for (ClusterGroupView clusterGroup : plan.clusterGroups()) {
+          final PartialQueryableIndexCursorFactory groupFactory =
+              makeClusterGroupFactory(timeBoundaryInspector, clusterGroup);
+          retVal.add(
+              heldView(
+                  makeClusterGroupView(segment, clusterGroup, groupFactory),
+                  Projections.getClusterGroupBundleName(clusterGroup.group().getClusteringValueIds())
+              )
+          );
+        }
+      }
+
+      // Check again, now that the holds are taken. If a bundle was evicted first, taking its hold mounted it empty.
+      if (index.isFullyDownloaded()) {
+        return retVal;
+      }
+    }
+    catch (Throwable t) {
+      throw CloseableUtils.closeAndWrapInCatch(t, closeViews(retVal));
+    }
+
+    CloseableUtils.closeAndWrapExceptions(closeViews(retVal));
+    return null;
+  }
+
+  /**
+   * Returns a factory that reads only {@code clusterGroup} of this factory's index, restricted to the same
+   * {@link #servableBundles}.
+   */
+  @VisibleForTesting
+  PartialQueryableIndexCursorFactory makeClusterGroupFactory(
+      TimeBoundaryInspector timeBoundaryInspector,
+      ClusterGroupView clusterGroup
+  )
+  {
+    return new PartialQueryableIndexCursorFactory(
+        index,
+        QueryableIndexCursorFactory.forClusterGroup(
+            index,
+            timeBoundaryInspector,
+            clusterGroup.group(),
+            clusterGroup.projectionRole()
+        ),
+        bundleAcquirer,
+        servableBundles
+    );
+  }
+
+  /**
+   * Returns a view of {@code clusterGroup} of {@code segment}, a segment over this factory's index, that reads rows
+   * through {@code groupFactory}.
+   */
+  private ClusterGroupSegment makeClusterGroupView(
+      Segment segment,
+      ClusterGroupView clusterGroup,
+      PartialQueryableIndexCursorFactory groupFactory
+  )
+  {
+    return new ClusterGroupSegment(
+        segment,
+        clusterGroup,
+        groupFactory,
+        // Only inspect the group once the whole segment is downloaded, since inspecting must not block on deep
+        // storage.
+        () -> index.isFullyDownloaded()
+              ? new QueryableIndexPhysicalSegmentInspector(
+                  index.getClusterGroupQueryableIndex(clusterGroup.group(), true)
+              )
+              : null,
+        QueryableIndex.class,
+        () -> index.getClusterGroupQueryableIndex(clusterGroup.group(), true)
+    );
+  }
+
+  /**
+   * Returns {@code view}, which reads only the bundle {@code bundleName}, as a resident view that holds the bundle
+   * until it is closed.
+   */
+  private AcquiredView heldView(Segment view, String bundleName)
+  {
+    final Closeable hold = bundleAcquirer.acquire(bundleName);
+    final SettableAsyncResource<Segment> resource = new SettableAsyncResource<>();
+    resource.set(view, hold);
+    return new AcquiredView(resource, 0);
+  }
+
+  private static Closeable closeViews(List<AcquiredView> views)
+  {
+    final List<AsyncResource<Segment>> resources = new ArrayList<>(views.size());
+    views.forEach(view -> resources.add(view.view()));
+    return CloseableUtils.forIterable(resources);
   }
 
   @Override
@@ -123,8 +341,8 @@ public class PartialQueryableIndexCursorFactory implements CursorFactory
       return delegate.makeCursorHolder(spec);
     }
     // restricted: dispatch from the restricted plan rather than letting the delegate match over the whole segment
-    final PartialQueryableIndex.CursorPrefetchPlan plan = index.planCursorPrefetch(spec, servableBundles);
-    if (plan.bundles().isEmpty()) {
+    final PartialQueryableIndex.CursorPrefetchPlan plan = planPrefetch(spec);
+    if (plan == null || plan.bundles().isEmpty()) {
       return EmptyCursorHolder.forSpec(spec, delegate);
     }
     if (plan.clusterGroupPlan() != null) {
@@ -138,13 +356,20 @@ public class PartialQueryableIndexCursorFactory implements CursorFactory
   {
     // The index resolves what the spec needs (projection match / surviving cluster groups / base table, required
     // columns, planned range reads); this factory purely orchestrates the downloads and cursor wiring.
-    final PartialQueryableIndex.CursorPrefetchPlan plan = index.planCursorPrefetch(spec, servableBundles);
-    if (plan.bundles().isEmpty()) {
-      // Filter rules out every cluster group, or nothing servable can answer the spec: no bundle to acquire, nothing
-      // to download.
+    final PartialQueryableIndex.CursorPrefetchPlan plan = planPrefetch(spec);
+    if (plan == null || plan.bundles().isEmpty()) {
+      // This factory reads no rows for the spec: another group serves its projection, the filter rules out every
+      // cluster group, or nothing servable can answer it. No bundle to acquire, nothing to download.
       return AsyncCursorHolder.completed(EmptyCursorHolder.forSpec(spec, delegate));
     }
     if (plan.clusterGroupPlan() != null) {
+      if (!delegate.isClusterGroup() && index.getClusterGroupSchemas().size() > 1) {
+        // Fail before downloading anything, since makeClusteredCursorHolder would refuse anyway.
+        throw DruidException.defensive(
+            "Cannot build a cursor over a segment with [%d] cluster groups; split it into cluster groups first",
+            index.getClusterGroupSchemas().size()
+        );
+      }
       // reuse the plan's cluster resolution
       return buildAsyncCursorHolder(
           plan.bundles(),
@@ -155,6 +380,40 @@ public class PartialQueryableIndexCursorFactory implements CursorFactory
         plan.bundles(),
         () -> delegate.makeCursorHolderForProjection(spec, plan.matchedProjection())
     );
+  }
+
+  /**
+   * Returns the downloads that the rows of this factory need to answer {@code spec}, or null if this factory is for a
+   * cluster group that reads no rows for {@code spec}, because another group serves the projection it matches, or
+   * because its own bundle is not servable.
+   */
+  @Nullable
+  private PartialQueryableIndex.CursorPrefetchPlan planPrefetch(CursorBuildSpec spec)
+  {
+    if (delegate.isClusterGroup()) {
+      final QueryableProjection<QueryableIndex> projection;
+      if (delegate.getProjectionRole() == ClusterGroupView.ProjectionRole.IGNORES) {
+        projection = null;
+      } else if (servableBundles == null) {
+        projection = delegate.matchProjection(spec);
+      } else {
+        projection = index.getServableProjection(spec, servableBundles);
+      }
+
+      if (projection == null) {
+        final ClusterGroupQueryPlan groupPlan = delegate.planClusterGroups(spec);
+        for (TableClusterGroupSpec group : groupPlan.survivingGroups()) {
+          if (!isServable(group)) {
+            return null;
+          }
+        }
+        return index.planClusterGroupCursorPrefetch(spec, groupPlan);
+      } else if (delegate.getProjectionRole() == ClusterGroupView.ProjectionRole.DEFERS) {
+        // Another group of this index serves the projection, which spans every group.
+        return null;
+      }
+    }
+    return index.planCursorPrefetch(spec, servableBundles);
   }
 
   /**
@@ -172,16 +431,7 @@ public class PartialQueryableIndexCursorFactory implements CursorFactory
   {
     final List<BundleHoldRelease> holdReleases = new ArrayList<>(bundles.size());
     try {
-      final List<AsyncResource<String>> runDownloads = new ArrayList<>();
-      for (PartialQueryableIndex.PrefetchBundle bundle : bundles) {
-        final BundleHoldRelease holdRelease = new BundleHoldRelease(bundleAcquirer.acquire(bundle.bundleName()));
-        holdReleases.add(holdRelease);
-        // Plan the bundle's range reads only now, under its freshly-acquired hold
-        for (PartialSegmentFileMapperV10.PlannedFetch fetch : bundle.planFetches()) {
-          runDownloads.add(submitRunFetch(bundle.bundleName(), fetch, holdRelease));
-        }
-      }
-      final AsyncResource<List<String>> downloaded = AsyncResources.collect(runDownloads);
+      final AsyncResource<List<String>> downloaded = startDownloads(bundles, holdReleases).downloaded();
 
       // Canceler runs if the awaiter closes this holder before it's ready (e.g. query cancel/timeout). Close the
       // collected resource to cancel every run download that hasn't begun its deep-storage read yet (queued tasks
@@ -226,6 +476,75 @@ public class PartialQueryableIndexCursorFactory implements CursorFactory
       // Failure while submitting downloads / wiring up the holder (e.g. submitDownload shutdown rejection). A run
       // download submitted before the failure may already be in flight, so release every bundle hold through the
       // handshake (requestRelease defers to the last in-flight body) rather than dropping it directly mid-mapFile().
+      throw CloseableUtils.closeAndWrapInCatch(t, () -> holdReleases.forEach(BundleHoldRelease::requestRelease));
+    }
+  }
+
+  /**
+   * Acquires a hold on each of {@code bundles}, adding its release to {@code holdReleases}, and submits one download
+   * task per planned range read. On failure, the caller must release the holds already in {@code holdReleases}.
+   */
+  private Downloads startDownloads(
+      List<PartialQueryableIndex.PrefetchBundle> bundles,
+      List<BundleHoldRelease> holdReleases
+  )
+  {
+    final List<AsyncResource<String>> runDownloads = new ArrayList<>();
+    long bytes = 0;
+    for (PartialQueryableIndex.PrefetchBundle bundle : bundles) {
+      final BundleHoldRelease holdRelease = new BundleHoldRelease(bundleAcquirer.acquire(bundle.bundleName()));
+      holdReleases.add(holdRelease);
+      // Plan the bundle's range reads only now, under its freshly-acquired hold
+      for (PartialSegmentFileMapperV10.PlannedFetch fetch : bundle.planFetches()) {
+        runDownloads.add(submitRunFetch(bundle.bundleName(), fetch, holdRelease));
+        bytes += fetch.run().length();
+      }
+    }
+    return new Downloads(AsyncResources.collect(runDownloads), bytes);
+  }
+
+  /**
+   * Starts downloading {@code bundles} for a view from {@link #acquireViews}. The view's resource yields {@code view}
+   * once every download is done, and holds the bundles until it is closed.
+   */
+  private AcquiredView prefetchView(List<PartialQueryableIndex.PrefetchBundle> bundles, Segment view)
+  {
+    final List<BundleHoldRelease> holdReleases = new ArrayList<>(bundles.size());
+    try {
+      final Downloads downloads = startDownloads(bundles, holdReleases);
+      final AsyncResource<Segment> resource = new AsyncResource<>()
+      {
+        @Override
+        public boolean isReady()
+        {
+          return downloads.downloaded().isReady();
+        }
+
+        @Override
+        public void addReadyCallback(Runnable callback)
+        {
+          downloads.downloaded().addReadyCallback(callback);
+        }
+
+        @Override
+        public Segment get()
+        {
+          // throws the download failure, if any
+          downloads.downloaded().get();
+          return view;
+        }
+
+        @Override
+        public void close()
+        {
+          // Cancels downloads that have not started, then releases each hold once its in-flight download is done.
+          CloseableUtils.closeAndSuppressExceptions(downloads.downloaded(), ignored -> {});
+          holdReleases.forEach(BundleHoldRelease::requestRelease);
+        }
+      };
+      return new AcquiredView(resource, downloads.bytes());
+    }
+    catch (Throwable t) {
       throw CloseableUtils.closeAndWrapInCatch(t, () -> holdReleases.forEach(BundleHoldRelease::requestRelease));
     }
   }
@@ -511,5 +830,12 @@ public class PartialQueryableIndexCursorFactory implements CursorFactory
     {
       return releaseHoldOnce;
     }
+  }
+
+  /**
+   * Downloads started by {@link #startDownloads}, and the total bytes they read.
+   */
+  private record Downloads(AsyncResource<List<String>> downloaded, long bytes)
+  {
   }
 }

@@ -39,6 +39,7 @@ import org.apache.druid.segment.incremental.IncrementalIndexSchema;
 import org.apache.druid.segment.projections.QueryableProjection;
 import org.apache.druid.segment.writeout.OffHeapMemorySegmentWriteOutMediumFactory;
 import org.apache.druid.testing.TemporaryFolderExtension;
+import org.apache.druid.timeline.SegmentId;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -165,15 +166,23 @@ class PartialQueryableIndexCursorFactoryClusteredProjectionTest extends PartialQ
   {
     final CountingRangeReader rangeReader = new CountingRangeReader(segmentDir);
     try (IndexAndMapper opened = openIndex(rangeReader, "combo_clustered")) {
-      final PartialQueryableIndexCursorFactory factory = factory(opened.index());
+      final Segment segment = new PartialQueryableIndexSegment(
+          opened.index(),
+          SegmentId.dummy("test"),
+          () -> {},
+          noOpAcquirer(directExec())
+      );
       // a filter on the clustering column with no grouping/aggregators does not match the aggregate projection, so the
-      // clustered path runs and prunes to the surviving group only.
+      // clustered path runs and prunes to the surviving group only, which gets the only view.
       final CursorBuildSpec spec = CursorBuildSpec.builder()
                                                   .setFilter(new EqualityFilter("tenant", ColumnType.STRING, "acme", null))
                                                   .build();
       Assertions.assertNull(opened.index().getProjection(spec), "filter-only spec must not match the projection");
 
-      try (AsyncCursorHolder asyncHolder = factory.makeCursorHolderAsync(spec);
+      final List<AcquiredView> views = segment.as(SegmentViewFetcher.class).acquireViews(spec);
+      Assertions.assertEquals(1, views.size());
+      try (AsyncCursorHolder asyncHolder =
+               views.get(0).view().get().as(CursorFactory.class).makeCursorHolderAsync(spec);
            CursorHolder holder = asyncHolder.release()) {
         Assertions.assertEquals(List.of("us-east-1", "us-west-2"), scanRegion(holder));
 
@@ -190,6 +199,7 @@ class PartialQueryableIndexCursorFactoryClusteredProjectionTest extends PartialQ
             "projection bundle must not download for a clustered-dispatch query; got: " + downloaded
         );
       }
+      views.forEach(view -> view.view().close());
     }
   }
 
@@ -198,7 +208,13 @@ class PartialQueryableIndexCursorFactoryClusteredProjectionTest extends PartialQ
   {
     final CountingRangeReader rangeReader = new CountingRangeReader(segmentDir);
     try (IndexAndMapper opened = openIndex(rangeReader, "combo_unserved_projection")) {
-      final PartialQueryableIndexCursorFactory factory = factory(opened.index(), ACME_BUNDLE::equals);
+      final Segment segment = new PartialQueryableIndexSegment(
+          opened.index(),
+          SegmentId.dummy("test"),
+          () -> {},
+          noOpAcquirer(directExec()),
+          ACME_BUNDLE::equals
+      );
       // this spec matches the projection when it's servable (see testProjectionMatchDownloadsOnlyProjectionBundle)
       final CursorBuildSpec aggSpec = CursorBuildSpec.builder()
                                                      .setGroupingColumns(List.of("tenant"))
@@ -206,9 +222,12 @@ class PartialQueryableIndexCursorFactoryClusteredProjectionTest extends PartialQ
                                                      .setPhysicalColumns(Set.of("tenant", "x"))
                                                      .build();
 
-      try (AsyncCursorHolder asyncHolder = factory.makeCursorHolderAsync(aggSpec);
+      // only the served acme group has a view, and it answers (2 of the 3 rows)
+      final List<AcquiredView> views = segment.as(SegmentViewFetcher.class).acquireViews(aggSpec);
+      Assertions.assertEquals(1, views.size());
+      try (AsyncCursorHolder asyncHolder =
+               views.get(0).view().get().as(CursorFactory.class).makeCursorHolderAsync(aggSpec);
            CursorHolder holder = asyncHolder.release()) {
-        // only the served acme group answers (2 of the 3 rows)
         final Cursor cursor = holder.asCursor();
         int rows = 0;
         while (!cursor.isDone()) {
@@ -224,6 +243,7 @@ class PartialQueryableIndexCursorFactoryClusteredProjectionTest extends PartialQ
             "unserved bundles must not download; got: " + downloaded
         );
       }
+      views.forEach(view -> view.view().close());
     }
   }
 

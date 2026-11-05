@@ -60,7 +60,15 @@ public class SqlClusteredSegmentsBenchmark extends SqlBaseQueryBenchmark
       // 2: filter on the clustering column + group by a secondary (higher cardinality) column
       "SELECT dimSecondary, SUM(valueLong) FROM %s WHERE clusterKey1 = '3' GROUP BY 1 ORDER BY 2",
       // 3: no-filter full aggregate (full scan, no pruning) as an overhead baseline
-      "SELECT SUM(valueLong) FROM %s"
+      "SELECT SUM(valueLong) FROM %s",
+      // 4: group by a secondary column with no filter, so every cluster group contributes
+      "SELECT dimSecondary, SUM(valueLong) FROM %s GROUP BY 1 ORDER BY 2",
+      // 5: top-N on a secondary column with no filter
+      "SELECT dimSecondary, SUM(valueLong) FROM %s GROUP BY 1 ORDER BY 2 DESC LIMIT 10",
+      // 6: time-bucketed aggregate with no filter, which reads each cluster group in __time order
+      "SELECT TIME_FLOOR(__time, 'PT1H'), SUM(valueLong) FROM %s GROUP BY 1",
+      // 7: __time-ordered scan with no filter
+      "SELECT __time, dimSecondary, valueLong FROM %s ORDER BY __time LIMIT 1000"
   );
 
   @Param({
@@ -86,7 +94,11 @@ public class SqlClusteredSegmentsBenchmark extends SqlBaseQueryBenchmark
       "0",
       "1",
       "2",
-      "3"
+      "3",
+      "4",
+      "5",
+      "6",
+      "7"
   })
   private int query;
 

@@ -39,8 +39,8 @@ import java.util.function.Function;
  * subset of cluster groups whose clustering values can't rule the query filter out (the surviving groups), a per-group
  * filter rewrite that folds clustering-column leaves against each group's constant clustering tuple (see
  * {@link #rewriteFor}), and a query-level {@link #virtualColumnRemap()} of query virtual columns equivalent to a
- * materialized column. Production callers (the cursor factories) iterate {@link #survivingGroups()} and call
- * {@link #rebuildCursorBuildSpec} once per surviving group to produce that group's {@link CursorBuildSpec}.
+ * materialized column. Production callers (the cursor factories and view fetchers) iterate {@link #survivingGroups()}
+ * and call {@link #rebuildCursorBuildSpec} once per surviving group to produce that group's {@link CursorBuildSpec}.
  */
 public final class ClusterGroupQueryPlan
 {
@@ -107,8 +107,8 @@ public final class ClusterGroupQueryPlan
    * Foldable clustering-VC leaves (equality / in / null) were already collapsed to TRUE / FALSE by the per-group
    * rewrite walk and never reach the rewrite. Grouping / select / aggregator reads of a dropped VC are served by the
    * {@link org.apache.druid.segment.RemapColumnSelectorFactory} the cursor factory wraps around the per-group selector
-   * factory (which exposes clustering columns as constants, whether from the fabricated per-group index or the
-   * {@link ClusteringColumnSelectorFactory}).
+   * factory (which exposes clustering columns as constants, whether from the fabricated per-group index or, for
+   * realtime segments, the group's own selector factory).
    */
   public CursorBuildSpec rebuildCursorBuildSpec(CursorBuildSpec spec, TableClusterGroupSpec group)
   {

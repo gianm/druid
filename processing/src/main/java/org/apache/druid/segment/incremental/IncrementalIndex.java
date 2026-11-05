@@ -371,6 +371,15 @@ public abstract class IncrementalIndex implements IncrementalIndexRowSelector, C
   @Nullable
   public abstract QueryableProjection<IncrementalIndexRowSelector> getProjection(CursorBuildSpec buildSpec);
 
+  /**
+   * Returns a function that matches specs to aggregate projections like {@link #getProjection(CursorBuildSpec)}, but
+   * as of when this method is called, rather than when the function is called. Rows may be added concurrently, and
+   * matching depends on the data interval and the set of columns, so callers that make one decision across several
+   * cursors, such as the cursors of each cluster group, use this to reach the same decision every time.
+   */
+  public abstract java.util.function.Function<CursorBuildSpec, QueryableProjection<IncrementalIndexRowSelector>>
+      makeProjectionMatcher();
+
   public abstract IncrementalIndexRowSelector getProjection(String name);
 
   public abstract boolean canAppendRow();

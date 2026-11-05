@@ -41,6 +41,7 @@ import org.apache.druid.collections.bitmap.BitmapFactory;
 import org.apache.druid.collections.bitmap.ConciseBitmapFactory;
 import org.apache.druid.collections.bitmap.ImmutableBitmap;
 import org.apache.druid.collections.bitmap.RoaringBitmapFactory;
+import org.apache.druid.common.asyncresource.AsyncResource;
 import org.apache.druid.guice.DruidProcessingModule;
 import org.apache.druid.guice.QueryRunnerFactoryModule;
 import org.apache.druid.guice.QueryableModule;
@@ -55,10 +56,10 @@ import org.apache.druid.java.util.common.logger.Logger;
 import org.apache.druid.query.DirectQueryProcessingPool;
 import org.apache.druid.query.Query;
 import org.apache.druid.query.QueryPlus;
-import org.apache.druid.query.QueryRunner;
 import org.apache.druid.query.QueryRunnerFactory;
 import org.apache.druid.query.QueryRunnerFactoryConglomerate;
 import org.apache.druid.query.SegmentDescriptor;
+import org.apache.druid.query.SinkQueryRunners;
 import org.apache.druid.query.TableDataSource;
 import org.apache.druid.query.context.ResponseContext;
 import org.apache.druid.query.filter.DimFilter;
@@ -66,18 +67,24 @@ import org.apache.druid.query.metadata.metadata.ListColumnIncluderator;
 import org.apache.druid.query.metadata.metadata.SegmentAnalysis;
 import org.apache.druid.query.metadata.metadata.SegmentMetadataQuery;
 import org.apache.druid.query.spec.SpecificSegmentSpec;
+import org.apache.druid.segment.AcquiredView;
 import org.apache.druid.segment.BaseObjectColumnValueSelector;
 import org.apache.druid.segment.ColumnSelectorFactory;
 import org.apache.druid.segment.ColumnValueSelector;
 import org.apache.druid.segment.Cursor;
 import org.apache.druid.segment.CursorBuildSpec;
+import org.apache.druid.segment.CursorFactory;
 import org.apache.druid.segment.CursorHolder;
 import org.apache.druid.segment.DimensionSelector;
 import org.apache.druid.segment.IndexIO;
 import org.apache.druid.segment.QueryableIndex;
-import org.apache.druid.segment.QueryableIndexCursorFactory;
 import org.apache.druid.segment.QueryableIndexSegment;
+import org.apache.druid.segment.ReferenceCountedSegmentProvider;
+import org.apache.druid.segment.Segment;
+import org.apache.druid.segment.SegmentMapFunction;
+import org.apache.druid.segment.SegmentViewFetcher;
 import org.apache.druid.segment.SimpleAscendingOffset;
+import org.apache.druid.segment.SplitSegment;
 import org.apache.druid.segment.column.BaseColumn;
 import org.apache.druid.segment.column.BaseColumnHolder;
 import org.apache.druid.segment.column.ColumnHolder;
@@ -110,6 +117,7 @@ import java.util.EnumSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -303,62 +311,70 @@ public class DumpSegment extends GuiceRunnable
       throws IOException
   {
     final ObjectMapper objectMapper = injector.getInstance(Key.get(ObjectMapper.class, Json.class));
-    final QueryableIndexCursorFactory cursorFactory = new QueryableIndexCursorFactory(index);
     final DimFilter filter = filterJson != null ? objectMapper.readValue(filterJson, DimFilter.class) : null;
 
     final CursorBuildSpec buildSpec = CursorBuildSpec.builder()
                                                      .setFilter(Filters.toFilter(filter))
                                                      .build();
 
-    try (final CursorHolder cursorHolder = cursorFactory.makeCursorHolder(buildSpec)) {
-      final Cursor cursor = cursorHolder.asCursor();
-      if (cursor == null) {
-        return;
-      }
-
-      withOutputStream(
-          new Function<>()
+    withOutputStream(
+        new Function<>()
+        {
+          @Override
+          public Object apply(final OutputStream out)
           {
-            @Override
-            public Object apply(final OutputStream out)
-            {
-              ColumnSelectorFactory columnSelectorFactory = cursor.getColumnSelectorFactory();
-              final List<BaseObjectColumnValueSelector> selectors = columnNames
-                  .stream()
-                  .map(columnSelectorFactory::makeColumnValueSelector)
-                  .collect(Collectors.toList());
+            // Read each view of the segment with its own cursor, since a cursor cannot span the cluster groups of a
+            // clustered segment. Views of a QueryableIndexSegment are resident, so they are ready immediately.
+            final List<AcquiredView> views = new QueryableIndexSegment(index, SegmentId.dummy("segment"))
+                .as(SegmentViewFetcher.class)
+                .acquireViews(buildSpec);
+            for (final AcquiredView view : views) {
+              try (final AsyncResource<Segment> viewResource = view.view();
+                   final CursorHolder cursorHolder =
+                       viewResource.get().as(CursorFactory.class).makeCursorHolder(buildSpec)) {
+                final Cursor cursor = cursorHolder.asCursor();
+                if (cursor == null) {
+                  continue;
+                }
 
-              while (!cursor.isDone()) {
-                final Map<String, Object> row = Maps.newLinkedHashMap();
+                ColumnSelectorFactory columnSelectorFactory = cursor.getColumnSelectorFactory();
+                final List<BaseObjectColumnValueSelector> selectors = columnNames
+                    .stream()
+                    .map(columnSelectorFactory::makeColumnValueSelector)
+                    .collect(Collectors.toList());
 
-                for (int i = 0; i < columnNames.size(); i++) {
-                  final String columnName = columnNames.get(i);
-                  final Object value = selectors.get(i).getObject();
+                while (!cursor.isDone()) {
+                  final Map<String, Object> row = Maps.newLinkedHashMap();
 
-                  if (timeISO8601 && columnNames.get(i).equals(ColumnHolder.TIME_COLUMN_NAME)) {
-                    row.put(columnName, new DateTime(value, DateTimeZone.UTC).toString());
-                  } else {
-                    row.put(columnName, value);
+                  for (int i = 0; i < columnNames.size(); i++) {
+                    final String columnName = columnNames.get(i);
+                    final Object value = selectors.get(i).getObject();
+
+                    if (timeISO8601 && columnNames.get(i).equals(ColumnHolder.TIME_COLUMN_NAME)) {
+                      row.put(columnName, new DateTime(value, DateTimeZone.UTC).toString());
+                    } else {
+                      row.put(columnName, value);
+                    }
                   }
-                }
 
-                try {
-                  out.write(objectMapper.writeValueAsBytes(row));
-                  out.write('\n');
-                }
-                catch (IOException e) {
-                  throw new RuntimeException(e);
-                }
+                  try {
+                    out.write(objectMapper.writeValueAsBytes(row));
+                    out.write('\n');
+                  }
+                  catch (IOException e) {
+                    throw new RuntimeException(e);
+                  }
 
-                cursor.advance();
+                  cursor.advance();
+                }
               }
-
-              return null;
             }
-          },
-          outputFileName
-      );
-    }
+
+            return null;
+          }
+        },
+        outputFileName
+    );
   }
 
   @VisibleForTesting
@@ -773,11 +789,45 @@ public class DumpSegment extends GuiceRunnable
   {
     final QueryRunnerFactoryConglomerate conglomerate = injector.getInstance(QueryRunnerFactoryConglomerate.class);
     final QueryRunnerFactory<T, Query<T>> factory = conglomerate.findFactory(query);
-    final QueryRunner<T> runner = factory.createRunner(new QueryableIndexSegment(index, SegmentId.dummy("segment")));
+
+    // Split clustered segments into cluster groups, as segment walkers do, since cursors cannot span groups. The
+    // reference is unmanaged, so closing the split segment does not close the caller's index.
+    final Segment segment = SplitSegment.mapFunction(SegmentMapFunction.IDENTITY, null).apply(
+        Optional.of(
+            new ReferenceCountedSegmentProvider.UnmanagedReference(
+                new QueryableIndexSegment(index, SegmentId.dummy("segment"))
+            )
+        )
+    ).orElseThrow();
+
+    // Every runner reads part of one segment, so they share a partition key, which lets segmentMetadata combine the
+    // analyses of cluster groups as parts of one segment.
+    final Object partition = new Object();
+    final List<SinkQueryRunners.PartitionRunner<T>> runners = new ArrayList<>();
+    if (segment instanceof SplitSegment splitSegment) {
+      for (SplitSegment.MappedClusterGroup clusterGroup : splitSegment.getClusterGroups()) {
+        runners.add(
+            new SinkQueryRunners.PartitionRunner<>(
+                index.getDataInterval(),
+                partition,
+                factory.createRunner(clusterGroup.segment())
+            )
+        );
+      }
+    } else {
+      runners.add(
+          new SinkQueryRunners.PartitionRunner<>(index.getDataInterval(), partition, factory.createRunner(segment))
+      );
+    }
+
     return factory
         .getToolchest()
-        .mergeResults(factory.mergeRunners(DirectQueryProcessingPool.INSTANCE, ImmutableList.of(runner)), true)
-        .run(QueryPlus.wrap(ResourceIdPopulatingQueryRunner.populateResourceId(query)), ResponseContext.createEmpty());
+        .mergeResults(
+            factory.mergeRunners(DirectQueryProcessingPool.INSTANCE, SinkQueryRunners.fromPartitionRunners(runners)),
+            true
+        )
+        .run(QueryPlus.wrap(ResourceIdPopulatingQueryRunner.populateResourceId(query)), ResponseContext.createEmpty())
+        .withBaggage(segment);
   }
 
   private static <T> void evaluateSequenceForSideEffects(final Sequence<T> sequence)

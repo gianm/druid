@@ -83,6 +83,17 @@ public class RestrictedSegment implements Segment
     } else if (BypassRestrictedSegment.class.equals(clazz)) {
       // A backdoor solution to get the wrapped segment, effectively bypassing the policy.
       return (T) new BypassRestrictedSegment(delegate, policy);
+    } else if (SegmentViewFetcher.class.equals(clazz)) {
+      // Wrap views even with NoRestrictionPolicy, so they keep the policy like this segment does.
+      final SegmentViewFetcher fetcher = delegate.as(SegmentViewFetcher.class);
+      if (fetcher == null) {
+        return null;
+      }
+      return (T) SegmentViewFetcher.wrap(
+          fetcher,
+          new RestrictedCursorFactory(delegate.as(CursorFactory.class), policy)::delegateSpec,
+          view -> new RestrictedSegment(view, policy)
+      );
     }
 
     // Unless we know there's no restriction, it's dangerous to return the implementation of a particular interface.

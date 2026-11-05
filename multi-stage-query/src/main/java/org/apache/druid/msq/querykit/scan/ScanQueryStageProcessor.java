@@ -33,9 +33,12 @@ import org.apache.druid.msq.querykit.InputNumberDataSource;
 import org.apache.druid.msq.querykit.ReadableInput;
 import org.apache.druid.query.DataSource;
 import org.apache.druid.query.Druids;
+import org.apache.druid.query.SegmentDescriptor;
 import org.apache.druid.query.filter.DimFilter;
 import org.apache.druid.query.scan.ScanQuery;
 import org.apache.druid.query.spec.QuerySegmentSpec;
+import org.apache.druid.segment.CursorBuildSpec;
+import org.apache.druid.segment.Segment;
 import org.apache.druid.segment.SegmentMapFunction;
 import org.apache.druid.segment.VirtualColumns;
 import org.apache.druid.segment.column.RowSignature;
@@ -128,6 +131,12 @@ public class ScanQueryStageProcessor extends BaseLeafStageProcessor
   {
     return runningCountForLimit != null
            && runningCountForLimit.get() >= ScanQueryFrameProcessor.getOffsetPlusLimit(query);
+  }
+
+  @Override
+  protected CursorBuildSpec makeCursorBuildSpec(Segment segment, SegmentDescriptor descriptor)
+  {
+    return ScanQueryFrameProcessor.makeCursorBuildSpec(query, descriptor);
   }
 
   @Override

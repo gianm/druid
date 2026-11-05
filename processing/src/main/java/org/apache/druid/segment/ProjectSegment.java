@@ -56,6 +56,15 @@ public class ProjectSegment extends WrappedSegment
     } else if (TimeBoundaryInspector.class.equals(clazz)) {
       // A projection cannot modify the __time column, so the underlying inspector is still valid.
       return (T) delegate.as(TimeBoundaryInspector.class);
+    } else if (SegmentViewFetcher.class.equals(clazz)) {
+      final SegmentViewFetcher fetcher = delegate.as(SegmentViewFetcher.class);
+      if (fetcher != null) {
+        return (T) SegmentViewFetcher.wrap(
+            fetcher,
+            new ProjectCursorFactory(delegate.as(CursorFactory.class), virtualColumns)::delegateSpec,
+            view -> new ProjectSegment(view, virtualColumns)
+        );
+      }
     }
     return null;
   }

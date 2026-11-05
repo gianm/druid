@@ -334,4 +334,62 @@ public class ColumnAnalysisTest extends InitializedNullHandlingTest
     assertSerDe(fold1);
     assertSerDe(fold2);
   }
+
+  @Test
+  public void testFoldClusterGroupsWithDifferentTypes()
+  {
+    final ColumnAnalysis longAnalysis =
+        new ColumnAnalysis(ColumnType.LONG, "LONG", false, false, 8L, null, null, null, null);
+    final ColumnAnalysis doubleAnalysis =
+        new ColumnAnalysis(ColumnType.DOUBLE, "DOUBLE", false, true, 16L, null, null, null, null);
+
+    // Each cluster group determines its own column types, so groups combine into the least restrictive type.
+    final ColumnAnalysis expected =
+        new ColumnAnalysis(ColumnType.DOUBLE, "DOUBLE", false, true, 24L, null, null, null, null);
+    Assertions.assertEquals(expected, longAnalysis.foldClusterGroups(doubleAnalysis));
+    Assertions.assertEquals(expected, doubleAnalysis.foldClusterGroups(longAnalysis));
+
+    // Whereas analyses of different data with different types do not combine.
+    Assertions.assertTrue(longAnalysis.fold(doubleAnalysis).isError());
+  }
+
+  @Test
+  public void testFoldClusterGroupsWithIncompatibleTypes()
+  {
+    final ColumnAnalysis longAnalysis =
+        new ColumnAnalysis(ColumnType.LONG, "LONG", false, false, 8L, null, null, null, null);
+    final ColumnAnalysis complexAnalysis = new ColumnAnalysis(
+        ColumnType.ofComplex("hyperUnique"),
+        "hyperUnique",
+        false,
+        false,
+        0L,
+        null,
+        null,
+        null,
+        null
+    );
+    Assertions.assertTrue(longAnalysis.foldClusterGroups(complexAnalysis).isError());
+  }
+
+  @Test
+  public void testFoldClusterGroupsHasUnknownCardinality()
+  {
+    final ColumnAnalysis analysis1 =
+        new ColumnAnalysis(ColumnType.STRING, "STRING", false, false, 1L, 2, "aaa", "ccc", null);
+    final ColumnAnalysis analysis2 =
+        new ColumnAnalysis(ColumnType.STRING, "STRING", true, false, 3L, 4, "bbb", "ddd", null);
+
+    // Each cluster group has its own dictionary, so the cardinality of their union is unknown.
+    Assertions.assertEquals(
+        new ColumnAnalysis(ColumnType.STRING, "STRING", true, false, 4L, -1, "aaa", "ddd", null),
+        analysis1.foldClusterGroups(analysis2)
+    );
+
+    // A column that is missing from the other groups is null in their rows.
+    Assertions.assertEquals(
+        new ColumnAnalysis(ColumnType.STRING, "STRING", false, true, 1L, -1, "aaa", "ccc", null),
+        analysis1.foldClusterGroups(null)
+    );
+  }
 }

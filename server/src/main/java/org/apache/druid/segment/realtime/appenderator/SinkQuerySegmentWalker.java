@@ -29,7 +29,6 @@ import org.apache.druid.client.cache.CacheConfig;
 import org.apache.druid.client.cache.CachePopulatorStats;
 import org.apache.druid.client.cache.ForegroundCachePopulator;
 import org.apache.druid.java.util.common.ISE;
-import org.apache.druid.java.util.common.Pair;
 import org.apache.druid.java.util.common.guava.FunctionalIterable;
 import org.apache.druid.java.util.common.guava.LazySequence;
 import org.apache.druid.java.util.common.guava.Sequence;
@@ -65,6 +64,7 @@ import org.apache.druid.query.spec.SpecificSegmentQueryRunner;
 import org.apache.druid.query.spec.SpecificSegmentSpec;
 import org.apache.druid.segment.Segment;
 import org.apache.druid.segment.SegmentMapFunction;
+import org.apache.druid.segment.SplitSegment;
 import org.apache.druid.segment.TimeBoundaryInspector;
 import org.apache.druid.segment.realtime.FireHydrant;
 import org.apache.druid.segment.realtime.sink.Sink;
@@ -197,10 +197,11 @@ public class SinkQuerySegmentWalker implements QuerySegmentWalker
       throw new ISE("Cannot handle subquery: %s", dataSourceFromQuery);
     }
 
-    // segmentMapFn maps each base Segment into a joined Segment if necessary.
+    // segmentMapFn maps each base Segment into a joined Segment if necessary. It also splits clustered segments into
+    // cluster groups, so each group can be processed as a separate segment.
     final SegmentMapFunction segmentMapFn = JvmUtils.safeAccumulateThreadCpuTime(
         cpuTimeAccumulator,
-        () -> ev.createSegmentMapFunction(policyEnforcer)
+        () -> SplitSegment.mapFunction(ev.createSegmentMapFunction(policyEnforcer), ev.getSegmentPruner())
     );
 
     // We compute the join cache key here itself so it doesn't need to be re-computed for every segment
@@ -216,7 +217,8 @@ public class SinkQuerySegmentWalker implements QuerySegmentWalker
     // allSegmentReferences, which holds one reference per FireHydrant (subsegment) and would overcount.
     final Set<SegmentId> queriedSinks = new HashSet<>();
     final Map<SegmentDescriptor, SegmentId> segmentIdMap = new HashMap<>();
-    final LinkedHashMap<SegmentDescriptor, List<QueryRunner<T>>> allRunners = new LinkedHashMap<>();
+    final LinkedHashMap<SegmentDescriptor, List<SinkQueryRunners.PartitionRunner<T>>> allRunners =
+        new LinkedHashMap<>();
     final ConcurrentHashMap<String, SinkMetricsEmittingQueryRunner.SegmentMetrics> segmentMetricsAccumulator = new ConcurrentHashMap<>();
 
     final List<SegmentDescriptor> missingSegments = new ArrayList<>();
@@ -243,19 +245,26 @@ public class SinkQuerySegmentWalker implements QuerySegmentWalker
           // We failed to acquire references for all subsegments. Bail and report the entire sink missing.
           missingSegments.add(descriptor);
         } else if (sinkSegmentReferences.isEmpty()) {
-          allRunners.put(descriptor, Collections.singletonList(new NoopQueryRunner<>()));
+          allRunners.put(
+              descriptor,
+              Collections.singletonList(
+                  new SinkQueryRunners.PartitionRunner<>(descriptor.getInterval(), descriptor, new NoopQueryRunner<>())
+              )
+          );
         } else {
           allSegmentReferences.addAll(sinkSegmentReferences);
           queriedSinks.add(sinkSegmentId);
 
           allRunners.put(
               descriptor,
-              sinkSegmentReferences.stream().map(
-                  segmentReference -> {
+              sinkSegmentReferences.stream().flatMap(
+                  segmentReference -> getSegmentsToProcess(sinkSegmentId, segmentReference).stream()
+              ).map(
+                  segmentToProcess -> {
                     QueryRunner<T> runner = new SinkMetricsEmittingQueryRunner<>(
                         emitter,
                         factory.getToolchest(),
-                        factory.createRunner(segmentReference.getSegment()),
+                        factory.createRunner(segmentToProcess.segment()),
                         segmentMetricsAccumulator,
                         SEGMENT_QUERY_METRIC,
                         sinkSegmentId.toString()
@@ -263,8 +272,8 @@ public class SinkQuerySegmentWalker implements QuerySegmentWalker
 
                     // 1) Only use caching if data is immutable
                     // 2) Hydrants are not the same between replicas, make sure cache is local
-                    if (segmentReference.isImmutable() && cache.isLocal()) {
-                      final Segment segment = segmentReference.getSegment();
+                    if (segmentToProcess.cacheable() && cache.isLocal()) {
+                      final Segment segment = segmentToProcess.segment();
                       final TimeBoundaryInspector timeBoundaryInspector = segment.as(TimeBoundaryInspector.class);
                       final Interval cacheKeyInterval;
 
@@ -275,7 +284,7 @@ public class SinkQuerySegmentWalker implements QuerySegmentWalker
                       }
 
                       runner = new CachingQueryRunner<>(
-                          makeHydrantCacheIdentifier(sinkSegmentId, segmentReference.getHydrantNumber()),
+                          segmentToProcess.cacheIdentifier(),
                           cacheKeyPrefix,
                           descriptor,
                           cacheKeyInterval,
@@ -319,7 +328,11 @@ public class SinkQuerySegmentWalker implements QuerySegmentWalker
                         new SpecificSegmentSpec(descriptor)
                     );
 
-                    return runner;
+                    return new SinkQueryRunners.PartitionRunner<>(
+                        descriptor.getInterval(),
+                        segmentToProcess.partition(),
+                        runner
+                    );
                   }
               ).collect(Collectors.toList())
           );
@@ -340,7 +353,7 @@ public class SinkQuerySegmentWalker implements QuerySegmentWalker
                     entry.getKey().getInterval().getStart(),
                     factory.mergeRunners(
                         DirectQueryProcessingPool.INSTANCE,
-                        entry.getValue()
+                        SinkQueryRunners.fromPartitionRunners(entry.getValue())
                     )
                 )
             ).collect(Collectors.toList())
@@ -349,14 +362,9 @@ public class SinkQuerySegmentWalker implements QuerySegmentWalker
         // Not bySegment: merge all hydrants at the same level, rather than grouped by Sink (segment).
         mergedRunner = factory.mergeRunners(
             queryProcessingPool,
-            new SinkQueryRunners<>(
-                allRunners.entrySet().stream().flatMap(
-                    entry ->
-                        entry.getValue().stream().map(
-                            runner ->
-                                Pair.of(entry.getKey().getInterval(), runner)
-                        )
-                ).collect(Collectors.toList()))
+            SinkQueryRunners.fromPartitionRunners(
+                allRunners.values().stream().flatMap(List::stream).collect(Collectors.toList())
+            )
         );
       }
 
@@ -445,6 +453,40 @@ public class SinkQuerySegmentWalker implements QuerySegmentWalker
   String getDataSource()
   {
     return dataSource;
+  }
+
+  /**
+   * Returns the segments to process for a hydrant: the hydrant's cluster groups if {@link SplitSegment#mapFunction}
+   * split it, so each group is processed as if it were a separate hydrant, or the hydrant itself otherwise.
+   */
+  private static List<SegmentToProcess> getSegmentsToProcess(
+      final SegmentId sinkSegmentId,
+      final SinkSegmentReference segmentReference
+  )
+  {
+    final String hydrantCacheIdentifier = makeHydrantCacheIdentifier(sinkSegmentId, segmentReference.getHydrantNumber());
+    if (segmentReference.getSegment() instanceof SplitSegment splitSegment) {
+      final List<SegmentToProcess> retVal = new ArrayList<>(splitSegment.getClusterGroups().size());
+      for (final SplitSegment.MappedClusterGroup clusterGroup : splitSegment.getClusterGroups()) {
+        retVal.add(
+            new SegmentToProcess(
+                clusterGroup.segment(),
+                segmentReference.isImmutable() && splitSegment.isClusterGroupCacheable(),
+                SplitSegment.makeClusterGroupCacheIdentifier(hydrantCacheIdentifier, clusterGroup.groupNumber()),
+                hydrantCacheIdentifier
+            )
+        );
+      }
+      return retVal;
+    }
+    return List.of(
+        new SegmentToProcess(
+            segmentReference.getSegment(),
+            segmentReference.isImmutable(),
+            hydrantCacheIdentifier,
+            hydrantCacheIdentifier
+        )
+    );
   }
 
   public static String makeHydrantCacheIdentifier(final FireHydrant hydrant)
@@ -640,6 +682,17 @@ public class SinkQuerySegmentWalker implements QuerySegmentWalker
         return querySegmentAndCacheTime.get();
       }
     }
+  }
+
+  /**
+   * Hydrant, or cluster group of a hydrant, to process as a separate segment; see {@link #getSegmentsToProcess}.
+   *
+   * @param cacheable whether results can be cached: the hydrant is immutable, and for a cluster group,
+   *                  {@link SplitSegment#isClusterGroupCacheable()}
+   * @param partition key shared by the cluster groups of a hydrant; see {@link SinkQueryRunners.PartitionRunner}
+   */
+  private record SegmentToProcess(Segment segment, boolean cacheable, String cacheIdentifier, String partition)
+  {
   }
 
   private static class SinkHolder implements Overshadowable<SinkHolder>

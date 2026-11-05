@@ -147,4 +147,14 @@ public interface QueryableIndex extends Closeable, ColumnInspector
   {
     return null;
   }
+
+  /**
+   * Returns capabilities of a single cluster group's columns, including its clustering columns. Only valid for
+   * clustered segments. The default reads them from {@link #getClusterGroupQueryableIndex}; indexes whose column data
+   * may not be resident override this to answer from metadata.
+   */
+  default ColumnInspector getClusterGroupColumnInspector(TableClusterGroupSpec groupSpec)
+  {
+    return getClusterGroupQueryableIndex(groupSpec, true);
+  }
 }

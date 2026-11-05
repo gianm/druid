@@ -117,6 +117,19 @@ public class HashJoinSegmentCursorFactory implements CursorFactory
   }
 
   /**
+   * Returns the spec that this factory passes to its base cursor factory for {@code spec}.
+   */
+  CursorBuildSpec delegateSpec(CursorBuildSpec spec)
+  {
+    final Filter combinedFilter = baseFilterAnd(spec.getFilter());
+    final Set<String> physicalColumns = computeBasePhysicalColumns(spec, combinedFilter);
+    if (clauses.isEmpty()) {
+      return noClausesBaseSpec(spec, combinedFilter, physicalColumns);
+    }
+    return planJoinCursor(spec, combinedFilter, physicalColumns).baseBuildSpec;
+  }
+
+  /**
    * Physical columns to pass to the base cursor: a copy of the spec's physical columns plus any columns required by
    * the combined filter (null when the spec didn't declare physical columns, meaning "all"). Shared by the no-clauses
    * and join paths.

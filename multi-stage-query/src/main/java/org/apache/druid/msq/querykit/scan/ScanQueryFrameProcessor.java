@@ -67,6 +67,7 @@ import org.apache.druid.query.Druids;
 import org.apache.druid.query.IterableRowsCursorHelper;
 import org.apache.druid.query.Order;
 import org.apache.druid.query.OrderBy;
+import org.apache.druid.query.SegmentDescriptor;
 import org.apache.druid.query.scan.ScanQuery;
 import org.apache.druid.query.scan.ScanQueryEngine;
 import org.apache.druid.query.scan.ScanResultValue;
@@ -74,6 +75,7 @@ import org.apache.druid.query.spec.SpecificSegmentSpec;
 import org.apache.druid.segment.AsyncCursorHolder;
 import org.apache.druid.segment.ColumnSelectorFactory;
 import org.apache.druid.segment.Cursor;
+import org.apache.druid.segment.CursorBuildSpec;
 import org.apache.druid.segment.CursorFactory;
 import org.apache.druid.segment.CursorHolder;
 import org.apache.druid.segment.Segment;
@@ -309,6 +311,14 @@ public class ScanQueryFrameProcessor extends BaseLeafFrameProcessor
     }
   }
 
+  /**
+   * Returns the spec that processors for {@code query} build cursors with on the segment of {@code descriptor}.
+   */
+  static CursorBuildSpec makeCursorBuildSpec(final ScanQuery query, final SegmentDescriptor descriptor)
+  {
+    return ScanQueryEngine.makeCursorBuildSpec(query.withQuerySegmentSpec(new SpecificSegmentSpec(descriptor)), null);
+  }
+
   @Override
   protected ReturnOrAwait<Unit> runWithSegment(final SegmentReferenceHolder segmentHolder) throws IOException
   {
@@ -323,12 +333,7 @@ public class ScanQueryFrameProcessor extends BaseLeafFrameProcessor
         }
 
         asyncCursorHolder = closer.register(
-            cursorFactory.makeCursorHolderAsync(
-                ScanQueryEngine.makeCursorBuildSpec(
-                    query.withQuerySegmentSpec(new SpecificSegmentSpec(segmentHolder.getDescriptor())),
-                    null
-                )
-            )
+            cursorFactory.makeCursorHolderAsync(makeCursorBuildSpec(query, segmentHolder.getDescriptor()))
         );
       }
 

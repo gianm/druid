@@ -97,6 +97,8 @@ public class QueryableIndexSegment implements Segment
       return (T) new QueryableIndexPhysicalSegmentInspector(index);
     } else if (TopNOptimizationInspector.class.equals(clazz)) {
       return (T) new SimpleTopNOptimizationInspector(true);
+    } else if (SegmentViewFetcher.class.equals(clazz)) {
+      return (T) (SegmentViewFetcher) spec -> cursorFactory.acquireViews(this, spec);
     }
 
     return null;

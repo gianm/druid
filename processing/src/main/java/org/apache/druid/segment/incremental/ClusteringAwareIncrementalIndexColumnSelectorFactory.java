@@ -19,15 +19,20 @@
 
 package org.apache.druid.segment.incremental;
 
+import org.apache.druid.math.expr.ExprEval;
+import org.apache.druid.math.expr.ExpressionType;
 import org.apache.druid.query.Order;
 import org.apache.druid.query.dimension.DimensionSpec;
+import org.apache.druid.query.monomorphicprocessing.RuntimeShapeInspector;
 import org.apache.druid.segment.ColumnValueSelector;
+import org.apache.druid.segment.ConstantExprEvalSelector;
 import org.apache.druid.segment.CursorBuildSpec;
 import org.apache.druid.segment.DimensionSelector;
 import org.apache.druid.segment.VirtualColumns;
 import org.apache.druid.segment.column.ColumnCapabilities;
+import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.column.RowSignature;
-import org.apache.druid.segment.projections.ClusteringColumnSelectorFactory;
+import org.apache.druid.segment.projections.ClusteredColumnInspector;
 
 import javax.annotation.Nullable;
 
@@ -38,19 +43,14 @@ import javax.annotation.Nullable;
  * <p>
  * The clustering-constant interception only applies when the requested name is NOT owned by a query virtual column. The
  * superclass resolves virtual columns before physical columns, so a query VC whose output name shadows a clustering
- * column must win: intercepting it here would make that VC — and any other retained VC that reads it — silently read
+ * column must win: intercepting it here would make that VC (and any other retained VC that reads it) silently read
  * the per-group constant instead of the computed value.
  */
 final class ClusteringAwareIncrementalIndexColumnSelectorFactory extends IncrementalIndexColumnSelectorFactory
 {
   private final RowSignature clusteringColumns;
+  private final Object[] clusteringValues;
   private final VirtualColumns queryVirtualColumns;
-  /**
-   * Serves the clustering columns as per-group constants. Its delegate is intentionally the throwing placeholder: this
-   * factory is only ever asked for clustering columns (and only when no query VC shadows them), and
-   * {@link ClusteringColumnSelectorFactory} serves those from the group's constant tuple without touching its delegate.
-   */
-  private final ClusteringColumnSelectorFactory clusteringConstants;
 
   ClusteringAwareIncrementalIndexColumnSelectorFactory(
       IncrementalIndexRowSelector rowSelector,
@@ -63,32 +63,30 @@ final class ClusteringAwareIncrementalIndexColumnSelectorFactory extends Increme
   {
     super(rowSelector, rowHolder, cursorBuildSpec, timeOrder);
     this.clusteringColumns = clusteringColumns;
+    this.clusteringValues = clusteringValues;
     this.queryVirtualColumns = cursorBuildSpec.getVirtualColumns();
-    this.clusteringConstants = new ClusteringColumnSelectorFactory(
-        ClusteringColumnSelectorFactory.UNINITIALIZED_DELEGATE,
-        clusteringColumns,
-        clusteringValues,
-        VirtualColumns.EMPTY,
-        rowSelector
-    );
   }
 
   /**
-   * Whether {@code name} should be served as this group's clustering constant: only when it is a clustering column AND
-   * no query virtual column owns the name. A query VC that shares a clustering column's name shadows it (the superclass
-   * resolves virtual columns before physical columns), so deferring to the superclass lets that VC — and anything that
-   * reads it through this factory — observe the computed value rather than the constant.
+   * Returns the position of {@code name} in {@link #clusteringColumns} if it should be served as this group's
+   * clustering constant, or -1 if not. A query virtual column that shares a clustering column's name shadows it (the
+   * superclass resolves virtual columns before physical columns), so deferring to the superclass lets that VC, and
+   * anything that reads it through this factory, observe the computed value rather than the constant.
    */
-  private boolean servesClusteringConstant(String name)
+  private int clusteringConstantIndex(String name)
   {
-    return clusteringColumns.indexOf(name) >= 0 && !queryVirtualColumns.exists(name);
+    return queryVirtualColumns.exists(name) ? -1 : clusteringColumns.indexOf(name);
   }
 
   @Override
   public DimensionSelector makeDimensionSelector(DimensionSpec dimensionSpec)
   {
-    if (servesClusteringConstant(dimensionSpec.getDimension())) {
-      return clusteringConstants.makeDimensionSelector(dimensionSpec);
+    final int index = clusteringConstantIndex(dimensionSpec.getDimension());
+    if (index >= 0) {
+      final Object value = clusteringValues[index];
+      return dimensionSpec.decorate(
+          DimensionSelector.constant(value == null ? null : String.valueOf(value), dimensionSpec.getExtractionFn())
+      );
     }
     return super.makeDimensionSelector(dimensionSpec);
   }
@@ -96,8 +94,14 @@ final class ClusteringAwareIncrementalIndexColumnSelectorFactory extends Increme
   @Override
   public ColumnValueSelector<?> makeColumnValueSelector(String columnName)
   {
-    if (servesClusteringConstant(columnName)) {
-      return clusteringConstants.makeColumnValueSelector(columnName);
+    final int index = clusteringConstantIndex(columnName);
+    if (index >= 0) {
+      return new ConstantValueSelector(
+          ExprEval.ofType(
+              ExpressionType.fromColumnTypeStrict(clusteringColumns.getColumnType(index).orElseThrow()),
+              clusteringValues[index]
+          )
+      );
     }
     return super.makeColumnValueSelector(columnName);
   }
@@ -106,9 +110,67 @@ final class ClusteringAwareIncrementalIndexColumnSelectorFactory extends Increme
   @Override
   public ColumnCapabilities getColumnCapabilities(String columnName)
   {
-    if (servesClusteringConstant(columnName)) {
-      return clusteringConstants.getColumnCapabilities(columnName);
+    final int index = clusteringConstantIndex(columnName);
+    if (index >= 0) {
+      final ColumnType type = clusteringColumns.getColumnType(index).orElseThrow();
+      return ClusteredColumnInspector.clusteringColumnCapabilities(type);
     }
     return super.getColumnCapabilities(columnName);
+  }
+
+  /**
+   * Value selector for a clustering column, returning the group's typed constant from {@link #getObject()}.
+   */
+  private static final class ConstantValueSelector implements ColumnValueSelector<Object>
+  {
+    private final ConstantExprEvalSelector delegate;
+
+    private ConstantValueSelector(ExprEval<?> eval)
+    {
+      this.delegate = new ConstantExprEvalSelector(eval);
+    }
+
+    @Override
+    public double getDouble()
+    {
+      return delegate.getDouble();
+    }
+
+    @Override
+    public float getFloat()
+    {
+      return delegate.getFloat();
+    }
+
+    @Override
+    public long getLong()
+    {
+      return delegate.getLong();
+    }
+
+    @Override
+    public boolean isNull()
+    {
+      return delegate.isNull();
+    }
+
+    @Nullable
+    @Override
+    public Object getObject()
+    {
+      return delegate.getObject().value();
+    }
+
+    @Override
+    public Class<Object> classOfObject()
+    {
+      return Object.class;
+    }
+
+    @Override
+    public void inspectRuntimeShape(RuntimeShapeInspector inspector)
+    {
+      inspector.visit("delegate", delegate);
+    }
   }
 }

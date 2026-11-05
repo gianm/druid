@@ -30,6 +30,7 @@ import org.apache.druid.java.util.common.Intervals;
 import org.apache.druid.java.util.common.JodaUtils;
 import org.apache.druid.java.util.common.Pair;
 import org.apache.druid.java.util.common.UOE;
+import org.apache.druid.java.util.common.guava.Comparators;
 import org.apache.druid.java.util.common.guava.Sequence;
 import org.apache.druid.java.util.common.guava.Sequences;
 import org.apache.druid.query.Order;
@@ -55,6 +56,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 public class ScanQueryRunnerFactory implements QueryRunnerFactory<ScanResultValue, ScanQuery>
@@ -118,12 +120,18 @@ public class ScanQueryRunnerFactory implements QueryRunnerFactory<ScanResultValu
                                         : query.getMaxRowsQueuedForOrdering());
         if (query.getScanRowsLimit() <= maxRowsQueuedForOrdering) {
           // Use priority queue strategy
+          // Each cluster group reads up to the limit, so a clustered segment reads up to (groups x limit) rows.
           return stableLimitingSort(intervalsAndRunnersOrdered, queryPlus, responseContext);
         } else {
           // Use n-way merge strategy
+          if (intervalsAndRunnersOrdered.isEmpty()) {
+            // Nothing to merge, such as when every cluster group of every segment was pruned.
+            return Sequences.empty();
+          }
+
           // Group the list of pairs by interval.  The LinkedHashMap will have an interval paired with a list of all the
-          // query runners for that segment
-          LinkedHashMap<Interval, List<Pair<Interval, QueryRunner<ScanResultValue>>>> partitionsGroupedByInterval =
+          // query runners for that time chunk
+          LinkedHashMap<Interval, List<Pair<Interval, QueryRunner<ScanResultValue>>>> runnersByTimeChunk =
               intervalsAndRunnersOrdered.stream()
                                         .collect(Collectors.groupingBy(
                                             x -> x.lhs,
@@ -131,41 +139,50 @@ public class ScanQueryRunnerFactory implements QueryRunnerFactory<ScanResultValu
                                             Collectors.toList()
                                         ));
 
-          // Find the segment with the largest numbers of partitions.  This will be used to compare with the
-          // maxSegmentPartitionsOrderedInMemory limit to determine if the query is at risk of consuming too much memory.
-          int maxNumPartitionsInSegment =
-              partitionsGroupedByInterval.values()
-                                         .stream()
-                                         .map(x -> x.size())
-                                         .max(Comparator.comparing(Integer::valueOf))
-                                         .get();
+          // Find the time chunk with the largest number of segments (or hydrants on realtime tasks). This will be used
+          // to compare with the maxSegmentPartitionsOrderedInMemory limit to determine if the query is at risk of
+          // consuming too much memory. Each cluster group counts as a segment, since the merge holds a cursor and a
+          // batch open for each one.
+          int maxNumSegmentsInTimeChunk =
+              runnersByTimeChunk.values()
+                                .stream()
+                                .map(x -> x.size())
+                                .max(Comparator.comparing(Integer::valueOf))
+                                .get();
 
           int maxSegmentPartitionsOrderedInMemory = query.getMaxSegmentPartitionsOrderedInMemory() == null
                                       ? scanQueryConfig.getMaxSegmentPartitionsOrderedInMemory()
                                       : query.getMaxSegmentPartitionsOrderedInMemory();
-          if (maxNumPartitionsInSegment <= maxSegmentPartitionsOrderedInMemory) {
+          if (maxNumSegmentsInTimeChunk <= maxSegmentPartitionsOrderedInMemory) {
             // Use n-way merge strategy
 
             // Create a list of grouped runner lists (i.e. each sublist/"runner group" corresponds to an interval) ->
             // there should be no interval overlap.  We create a list of lists so we can create a sequence of sequences.
             // There's no easy way to convert a LinkedHashMap to a sequence because it's non-iterable.
+            // Order the runner groups by time, since the runners themselves need not be.
+            final Comparator<Interval> intervalOrder =
+                Order.DESCENDING.equals(query.getTimeOrder())
+                ? Comparators.intervalsByStartThenEnd().reversed()
+                : Comparators.intervalsByStartThenEnd();
             List<List<QueryRunner<ScanResultValue>>> groupedRunners =
-                partitionsGroupedByInterval.values()
-                                           .stream()
-                                           .map(pairs -> pairs
-                                               .stream()
-                                               .map(segQueryRunnerPair -> segQueryRunnerPair.rhs)
-                                               .collect(Collectors.toList()))
-                                           .collect(Collectors.toList());
+                runnersByTimeChunk.entrySet()
+                                  .stream()
+                                  .sorted(Map.Entry.comparingByKey(intervalOrder))
+                                  .map(entry -> entry.getValue()
+                                                     .stream()
+                                                     .map(segQueryRunnerPair -> segQueryRunnerPair.rhs)
+                                                     .collect(Collectors.toList()))
+                                  .collect(Collectors.toList());
 
             return nWayMergeAndLimit(groupedRunners, queryPlus, responseContext);
           }
+          // The message deliberately calls cluster groups segments, since cluster groups are rarely used.
           throw ResourceLimitExceededException.withMessage(
               "Time ordering is not supported for a Scan query with %,d segments per time chunk and a row limit of %,d. "
               + "Try reducing your query limit below maxRowsQueuedForOrdering (currently %,d), or using compaction to "
               + "reduce the number of segments per time chunk, or raising maxSegmentPartitionsOrderedInMemory "
               + "(currently %,d) above the number of segments you have per time chunk.",
-              maxNumPartitionsInSegment,
+              maxNumSegmentsInTimeChunk,
               query.getScanRowsLimit(),
               maxRowsQueuedForOrdering,
               maxSegmentPartitionsOrderedInMemory

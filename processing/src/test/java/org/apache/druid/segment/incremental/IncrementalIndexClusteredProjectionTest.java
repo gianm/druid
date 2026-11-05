@@ -31,15 +31,24 @@ import org.apache.druid.java.util.common.granularity.Granularities;
 import org.apache.druid.query.aggregation.CountAggregatorFactory;
 import org.apache.druid.query.aggregation.LongSumAggregatorFactory;
 import org.apache.druid.query.dimension.DefaultDimensionSpec;
+import org.apache.druid.query.filter.EqualityFilter;
 import org.apache.druid.query.groupby.GroupByQuery;
 import org.apache.druid.query.groupby.GroupingEngine;
 import org.apache.druid.query.groupby.orderby.OrderByColumnSpec.Direction;
+import org.apache.druid.segment.ClusterGroupView;
 import org.apache.druid.segment.ColumnValueSelector;
 import org.apache.druid.segment.Cursor;
 import org.apache.druid.segment.CursorBuildSpec;
+import org.apache.druid.segment.CursorFactory;
 import org.apache.druid.segment.CursorHolder;
 import org.apache.druid.segment.DimensionSelector;
+import org.apache.druid.segment.IncrementalIndexSegment;
+import org.apache.druid.segment.Segment;
+import org.apache.druid.segment.SegmentViewTestUtil;
+import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.testing.InitializedNullHandlingTest;
+import org.apache.druid.timeline.SegmentId;
+import org.joda.time.Interval;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -67,6 +76,19 @@ class IncrementalIndexClusteredProjectionTest extends InitializedNullHandlingTes
 
   private static OnheapIncrementalIndex clusteredWithProjection()
   {
+    return clusteredWithProjection(
+        AggregateProjectionSpec.builder("proj")
+                               .groupingColumns(new StringDimensionSchema("tenant"))
+                               .aggregators(
+                                   new CountAggregatorFactory("cnt"),
+                                   new LongSumAggregatorFactory("sum_x", "x")
+                               )
+                               .build()
+    );
+  }
+
+  private static OnheapIncrementalIndex clusteredWithProjection(AggregateProjectionSpec projectionSpec)
+  {
     final ClusteredValueGroupsBaseTableProjectionSpec spec = ClusteredValueGroupsBaseTableProjectionSpec.builder()
         .columns(
             new StringDimensionSchema("tenant"),
@@ -76,14 +98,6 @@ class IncrementalIndexClusteredProjectionTest extends InitializedNullHandlingTes
         )
         .clusteringColumns("tenant")
         .build();
-    final AggregateProjectionSpec projectionSpec =
-        AggregateProjectionSpec.builder("proj")
-                               .groupingColumns(new StringDimensionSchema("tenant"))
-                               .aggregators(
-                                   new CountAggregatorFactory("cnt"),
-                                   new LongSumAggregatorFactory("sum_x", "x")
-                               )
-                               .build();
     final IncrementalIndexSchema schema = IncrementalIndexSchema.builder()
         .withMinTimestamp(T0)
         .withTimestampSpec(TIMESTAMP_SPEC)
@@ -110,11 +124,16 @@ class IncrementalIndexClusteredProjectionTest extends InitializedNullHandlingTes
    */
   private static CursorBuildSpec projectionMatchingBuildSpec()
   {
+    return projectionMatchingBuildSpec(Intervals.ETERNITY);
+  }
+
+  private static CursorBuildSpec projectionMatchingBuildSpec(Interval interval)
+  {
     final GroupByQuery query =
         GroupByQuery.builder()
                     .setDataSource("test")
                     .setGranularity(Granularities.ALL)
-                    .setInterval(Intervals.ETERNITY)
+                    .setInterval(interval)
                     .addDimension("tenant")
                     .addAggregator(new CountAggregatorFactory("cnt"))
                     .addAggregator(new LongSumAggregatorFactory("sum_x", "x"))
@@ -173,39 +192,156 @@ class IncrementalIndexClusteredProjectionTest extends InitializedNullHandlingTes
   }
 
   @Test
-  void testBaseClusteredScanStillWalksGroupsInClusteringOrder()
+  void testProjectionServedByFirstClusterGroup()
   {
+    // Views acquired without knowing the query are the cluster groups, so the projection, which spans every group, is
+    // served by the first group alone; the other groups' cursors are empty.
     try (OnheapIncrementalIndex index = clusteredWithProjection()) {
-      final IncrementalIndexCursorFactory factory = new IncrementalIndexCursorFactory(index);
-      // FULL_SCAN does not match the projection, so it falls through to the clustered base-table path and walks the
-      // cluster groups in clustering-ascending order (acme rows before globex), exactly as the non-projection
-      // clustered index does.
-      try (CursorHolder holder = factory.makeCursorHolder(CursorBuildSpec.FULL_SCAN)) {
-        Assertions.assertFalse(
-            holder.isPreAggregated(),
-            "FULL_SCAN must not pick the projection; it should use the clustered base-table cursor"
-        );
+      final List<Segment> groups = SegmentViewTestUtil.residentViews(
+          new IncrementalIndexSegment(index, SegmentId.dummy("test")),
+          null
+      );
+      Assertions.assertEquals(2, groups.size());
+
+      final CursorBuildSpec buildSpec = projectionMatchingBuildSpec();
+      try (CursorHolder holder = groups.get(0).as(CursorFactory.class).makeCursorHolder(buildSpec)) {
+        Assertions.assertTrue(holder.isPreAggregated(), "expected the projection (pre-aggregated) cursor holder");
         final Cursor cursor = holder.asCursor();
         final DimensionSelector tenantSel =
             cursor.getColumnSelectorFactory().makeDimensionSelector(DefaultDimensionSpec.of("tenant"));
-        final DimensionSelector regionSel =
-            cursor.getColumnSelectorFactory().makeDimensionSelector(DefaultDimensionSpec.of("region"));
-        final List<List<String>> out = new ArrayList<>();
+        final List<String> tenants = new ArrayList<>();
         while (!cursor.isDone()) {
-          final String tenant = tenantSel.getRow().size() == 0 ? null : tenantSel.lookupName(tenantSel.getRow().get(0));
-          final String region = regionSel.getRow().size() == 0 ? null : regionSel.lookupName(regionSel.getRow().get(0));
-          out.add(Arrays.asList(tenant, region));
+          tenants.add(tenantSel.lookupName(tenantSel.getRow().get(0)));
           cursor.advance();
         }
-        Assertions.assertEquals(
-            List.of(
-                List.of("acme", "us-east-1"),
-                List.of("acme", "us-west-2"),
-                List.of("globex", "eu-west-1")
-            ),
-            out
-        );
+        Assertions.assertEquals(List.of("acme", "globex"), tenants);
       }
+      try (CursorHolder holder = groups.get(1).as(CursorFactory.class).makeCursorHolder(buildSpec)) {
+        Assertions.assertTrue(holder.asCursor().isDone());
+      }
+    }
+  }
+
+  @Test
+  void testViewsAcquiredWithSpecIgnoreProjections()
+  {
+    // Views acquired with a spec that matches no projection are only the groups that the spec does not rule out. They
+    // read their own rows, even for specs that match a projection, since no group serves it.
+    try (OnheapIncrementalIndex index = clusteredWithProjection()) {
+      final CursorBuildSpec globexSpec =
+          CursorBuildSpec.builder()
+                         .setFilter(new EqualityFilter("tenant", ColumnType.STRING, "globex", null))
+                         .build();
+      final List<Segment> views = SegmentViewTestUtil.residentViews(
+          new IncrementalIndexSegment(index, SegmentId.dummy("test")),
+          globexSpec
+      );
+      Assertions.assertEquals(1, views.size());
+      Assertions.assertEquals(
+          ClusterGroupView.ProjectionRole.IGNORES,
+          views.get(0).as(ClusterGroupView.class).projectionRole()
+      );
+      try (CursorHolder holder = views.get(0).as(CursorFactory.class).makeCursorHolder(projectionMatchingBuildSpec())) {
+        Assertions.assertFalse(holder.isPreAggregated());
+      }
+      Assertions.assertEquals(1, countInputRows(views.get(0), projectionMatchingBuildSpec()));
+    }
+  }
+
+  @Test
+  void testClusterGroupsAgreeOnProjectionWhenRowsArriveBetweenCursors()
+  {
+    // The projection groups rows by hour, so it serves a query interval that is not aligned to hours only while every
+    // row is within the interval. Views acquired together decide whether specs match a projection only once, so a
+    // later row past the end of the interval cannot make one group read its own rows after another group left them to
+    // the projection (losing them), or the reverse (counting them twice).
+    final AggregateProjectionSpec hourlyProjectionSpec =
+        AggregateProjectionSpec.builder("proj_hourly")
+                               .virtualColumns(Granularities.toVirtualColumn(Granularities.HOUR, "__gran"))
+                               .groupingColumns(new LongDimensionSchema("__gran"), new StringDimensionSchema("tenant"))
+                               .aggregators(
+                                   new CountAggregatorFactory("cnt"),
+                                   new LongSumAggregatorFactory("sum_x", "x")
+                               )
+                               .build();
+    final CursorBuildSpec buildSpec = projectionMatchingBuildSpec(Intervals.utc(T0, T0 + 10));
+
+    for (boolean servingGroupFirst : new boolean[]{true, false}) {
+      try (OnheapIncrementalIndex index = clusteredWithProjection(hourlyProjectionSpec)) {
+        Assertions.assertNotNull(index.getProjection(buildSpec));
+        final List<Segment> groups = SegmentViewTestUtil.residentViews(
+            new IncrementalIndexSegment(index, SegmentId.dummy("test")),
+            null
+        );
+        Assertions.assertEquals(2, groups.size());
+
+        long numRows = countInputRows(groups.get(servingGroupFirst ? 0 : 1), buildSpec);
+        index.add(row(T0 + 7_200_000, "acme", "us-east-1", 100));
+        Assertions.assertNull(index.getProjection(buildSpec));
+        numRows += countInputRows(groups.get(servingGroupFirst ? 1 : 0), buildSpec);
+        Assertions.assertEquals(3, numRows, "servingGroupFirst[" + servingGroupFirst + "]");
+      }
+    }
+  }
+
+  @Test
+  void testBaseClusteredScanStillWalksGroupsInClusteringOrder()
+  {
+    try (OnheapIncrementalIndex index = clusteredWithProjection()) {
+      // FULL_SCAN does not match the projection, so each cluster group reads its own rows, and the groups come in
+      // clustering-ascending order (acme rows before globex), exactly as for the non-projection clustered index.
+      final List<List<String>> out = new ArrayList<>();
+      for (Segment group : SegmentViewTestUtil.residentViews(
+          new IncrementalIndexSegment(index, SegmentId.dummy("test")),
+          CursorBuildSpec.FULL_SCAN
+      )) {
+        try (CursorHolder holder = group.as(CursorFactory.class).makeCursorHolder(CursorBuildSpec.FULL_SCAN)) {
+          Assertions.assertFalse(
+              holder.isPreAggregated(),
+              "FULL_SCAN must not pick the projection; it should use the clustered base-table cursor"
+          );
+          final Cursor cursor = holder.asCursor();
+          final DimensionSelector tenantSel =
+              cursor.getColumnSelectorFactory().makeDimensionSelector(DefaultDimensionSpec.of("tenant"));
+          final DimensionSelector regionSel =
+              cursor.getColumnSelectorFactory().makeDimensionSelector(DefaultDimensionSpec.of("region"));
+          while (!cursor.isDone()) {
+            final String tenant =
+                tenantSel.getRow().size() == 0 ? null : tenantSel.lookupName(tenantSel.getRow().get(0));
+            final String region =
+                regionSel.getRow().size() == 0 ? null : regionSel.lookupName(regionSel.getRow().get(0));
+            out.add(Arrays.asList(tenant, region));
+            cursor.advance();
+          }
+        }
+      }
+      Assertions.assertEquals(
+          List.of(
+              List.of("acme", "us-east-1"),
+              List.of("acme", "us-west-2"),
+              List.of("globex", "eu-west-1")
+          ),
+          out
+      );
+    }
+  }
+
+  /**
+   * Returns the number of input rows that a cursor of {@code segment} for {@code buildSpec} covers: the sum of
+   * {@code cnt} if it reads a projection, or else the number of rows.
+   */
+  private static long countInputRows(Segment segment, CursorBuildSpec buildSpec)
+  {
+    try (CursorHolder holder = segment.as(CursorFactory.class).makeCursorHolder(buildSpec)) {
+      final Cursor cursor = holder.asCursor();
+      final ColumnValueSelector<?> cntSel =
+          holder.isPreAggregated() ? cursor.getColumnSelectorFactory().makeColumnValueSelector("cnt") : null;
+      long numRows = 0;
+      while (!cursor.isDone()) {
+        numRows += cntSel != null ? cntSel.getLong() : 1;
+        cursor.advance();
+      }
+      return numRows;
     }
   }
 }

@@ -127,6 +127,8 @@ public class PartialQueryableIndexSegment implements ReferenceCountedSegmentProv
       }
     } else if (Metadata.class.equals(clazz)) {
       return (T) index.getMetadata();
+    } else if (SegmentViewFetcher.class.equals(clazz)) {
+      return (T) (SegmentViewFetcher) spec -> cursorFactory.acquireViews(this, spec);
     }
     return null;
   }

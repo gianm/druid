@@ -37,9 +37,12 @@ import org.apache.druid.msq.querykit.BaseLeafStageProcessor;
 import org.apache.druid.msq.querykit.ReadableInput;
 import org.apache.druid.msq.util.MultiStageQueryContext;
 import org.apache.druid.query.QueryToolChestWarehouse;
+import org.apache.druid.query.SegmentDescriptor;
 import org.apache.druid.query.aggregation.AggregatorFactory;
 import org.apache.druid.query.groupby.GroupByQuery;
 import org.apache.druid.query.groupby.GroupingEngine;
+import org.apache.druid.segment.CursorBuildSpec;
+import org.apache.druid.segment.Segment;
 import org.apache.druid.segment.SegmentMapFunction;
 import org.apache.druid.segment.column.RowSignature;
 import org.apache.druid.segment.loading.AcquireMode;
@@ -168,6 +171,13 @@ public class GroupByPreShuffleStageProcessor extends BaseLeafStageProcessor
     }
 
     return filteredSlices;
+  }
+
+  @Nullable
+  @Override
+  protected CursorBuildSpec makeCursorBuildSpec(Segment segment, SegmentDescriptor descriptor)
+  {
+    return GroupByPreShuffleFrameProcessor.makeCursorBuildSpec(query, segment, descriptor);
   }
 
   @Override

@@ -22,6 +22,7 @@ package org.apache.druid.query.metadata;
 import com.google.inject.Inject;
 import org.apache.druid.data.input.impl.TimestampSpec;
 import org.apache.druid.java.util.common.granularity.Granularity;
+import org.apache.druid.java.util.common.guava.LazySequence;
 import org.apache.druid.java.util.common.guava.Sequence;
 import org.apache.druid.java.util.common.guava.Sequences;
 import org.apache.druid.query.ChainedExecutionQueryRunner;
@@ -31,6 +32,7 @@ import org.apache.druid.query.QueryRunner;
 import org.apache.druid.query.QueryRunnerFactory;
 import org.apache.druid.query.QueryToolChest;
 import org.apache.druid.query.QueryWatcher;
+import org.apache.druid.query.SinkQueryRunners;
 import org.apache.druid.query.aggregation.AggregatorFactory;
 import org.apache.druid.query.context.ResponseContext;
 import org.apache.druid.query.metadata.metadata.ColumnAnalysis;
@@ -43,6 +45,7 @@ import org.apache.druid.segment.Segment;
 import org.joda.time.Interval;
 
 import javax.annotation.Nullable;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -191,7 +194,48 @@ public class SegmentMetadataQueryRunnerFactory implements QueryRunnerFactory<Seg
       Iterable<QueryRunner<SegmentAnalysis>> queryRunners
   )
   {
-    return new ChainedExecutionQueryRunner<>(queryProcessingPool, queryWatcher, queryRunners);
+    return new ChainedExecutionQueryRunner<>(queryProcessingPool, queryWatcher, combineClusterGroups(queryRunners));
+  }
+
+  /**
+   * Returns {@code queryRunners}, with the runners of the cluster groups of each segment combined into one runner,
+   * which merges their analyses using {@link SegmentMetadataQueryQueryToolChest#mergeClusterGroupAnalyses}. Segment
+   * walkers identify such runners by giving them equal partition keys in {@link SinkQueryRunners}.
+   */
+  private static Iterable<QueryRunner<SegmentAnalysis>> combineClusterGroups(
+      Iterable<QueryRunner<SegmentAnalysis>> queryRunners
+  )
+  {
+    if (!(queryRunners instanceof SinkQueryRunners<SegmentAnalysis> sinkQueryRunners)) {
+      return queryRunners;
+    }
+
+    final Map<Object, List<QueryRunner<SegmentAnalysis>>> runnersByPartition = new LinkedHashMap<>();
+    for (SinkQueryRunners.PartitionRunner<SegmentAnalysis> runner : sinkQueryRunners.getPartitionRunners()) {
+      runnersByPartition.computeIfAbsent(runner.partition(), partition -> new ArrayList<>()).add(runner.runner());
+    }
+
+    final List<QueryRunner<SegmentAnalysis>> retVal = new ArrayList<>(runnersByPartition.size());
+    for (List<QueryRunner<SegmentAnalysis>> runners : runnersByPartition.values()) {
+      if (runners.size() == 1) {
+        retVal.add(runners.get(0));
+      } else {
+        retVal.add(
+            (queryPlus, responseContext) -> new LazySequence<>(() -> {
+              SegmentAnalysis merged = null;
+              for (QueryRunner<SegmentAnalysis> runner : runners) {
+                for (SegmentAnalysis analysis : runner.run(queryPlus, responseContext).toList()) {
+                  merged = merged == null
+                           ? analysis
+                           : SegmentMetadataQueryQueryToolChest.mergeClusterGroupAnalyses(merged, analysis);
+                }
+              }
+              return merged == null ? Sequences.empty() : Sequences.simple(List.of(merged));
+            })
+        );
+      }
+    }
+    return retVal;
   }
 
   @Override

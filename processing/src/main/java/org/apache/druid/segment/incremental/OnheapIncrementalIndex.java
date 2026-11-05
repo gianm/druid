@@ -57,6 +57,7 @@ import org.apache.druid.segment.projections.QueryableProjection;
 import org.apache.druid.segment.virtual.ExprEvalSelectorCache;
 import org.apache.druid.segment.virtual.ExpressionSelectors;
 import org.apache.druid.utils.JvmUtils;
+import org.joda.time.Interval;
 
 import javax.annotation.Nullable;
 import java.io.IOException;
@@ -66,11 +67,13 @@ import java.util.Collection;
 import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.SortedSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
@@ -80,6 +83,7 @@ import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -463,12 +467,34 @@ public class OnheapIncrementalIndex extends IncrementalIndex
   @Override
   public QueryableProjection<IncrementalIndexRowSelector> getProjection(CursorBuildSpec buildSpec)
   {
+    return findMatchingProjection(buildSpec, getInterval(), columnName -> getColumnCapabilities(columnName) != null);
+  }
+
+  @Override
+  public Function<CursorBuildSpec, QueryableProjection<IncrementalIndexRowSelector>> makeProjectionMatcher()
+  {
+    if (aggregateProjections.isEmpty()) {
+      // Nothing to match, so the state of this index does not matter.
+      return this::getProjection;
+    }
+    final Interval interval = getInterval();
+    final Set<String> columnNames = new HashSet<>(getColumnNames());
+    return buildSpec -> findMatchingProjection(buildSpec, interval, columnNames::contains);
+  }
+
+  @Nullable
+  private QueryableProjection<IncrementalIndexRowSelector> findMatchingProjection(
+      CursorBuildSpec buildSpec,
+      Interval dataInterval,
+      Predicate<String> hasColumn
+  )
+  {
     return Projections.findMatchingProjection(
         buildSpec,
         aggregateProjections,
-        getInterval(),
+        dataInterval,
         (specName, columnName) -> projections.get(specName).getDimensionsMap().containsKey(columnName)
-                                  || getColumnCapabilities(columnName) == null,
+                                  || !hasColumn.test(columnName),
         projections::get
     );
   }

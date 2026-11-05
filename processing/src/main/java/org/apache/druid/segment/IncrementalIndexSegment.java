@@ -71,6 +71,8 @@ public class IncrementalIndexSegment implements Segment
       return (T) new IncrementalIndexPhysicalSegmentInspector(index);
     } else if (TopNOptimizationInspector.class.equals(clazz)) {
       return (T) new SimpleTopNOptimizationInspector(true);
+    } else if (SegmentViewFetcher.class.equals(clazz)) {
+      return (T) (SegmentViewFetcher) spec -> IncrementalIndexCursorFactory.acquireViews(index, this, spec);
     }
     return null;
   }

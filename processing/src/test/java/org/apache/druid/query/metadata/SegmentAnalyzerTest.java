@@ -50,12 +50,14 @@ import org.apache.druid.query.metadata.metadata.SegmentAnalysis;
 import org.apache.druid.query.metadata.metadata.SegmentMetadataQuery;
 import org.apache.druid.query.spec.LegacySegmentSpec;
 import org.apache.druid.segment.ColumnSelectorFactory;
+import org.apache.druid.segment.CursorBuildSpec;
 import org.apache.druid.segment.Cursors;
 import org.apache.druid.segment.IncrementalIndexSegment;
 import org.apache.druid.segment.IndexBuilder;
 import org.apache.druid.segment.QueryableIndex;
 import org.apache.druid.segment.QueryableIndexSegment;
 import org.apache.druid.segment.Segment;
+import org.apache.druid.segment.SegmentViewTestUtil;
 import org.apache.druid.segment.TestHelper;
 import org.apache.druid.segment.TestIndex;
 import org.apache.druid.segment.column.BaseColumnHolder;
@@ -455,9 +457,10 @@ public class SegmentAnalyzerTest extends InitializedNullHandlingTest
   @Test
   public void testAnalysisClusteredSegmentReportsCorrectTypesNoErrors() throws IOException
   {
-    // A clustered segment has empty top-level columns (data lives in per-group sub-indexes). SegmentAnalyzer must
-    // still report the correct logical column types and NOT mark every column as error("unknown_type"), otherwise
-    // the broker's SQL schema for a clustered datasource would be broken.
+    // A clustered segment has empty top-level columns (data lives in per-group sub-indexes), so segment walkers analyze
+    // it one cluster group at a time. SegmentAnalyzer must report the correct logical column types for each group and
+    // NOT mark columns as error("unknown_type"), otherwise the broker's SQL schema for a clustered datasource would be
+    // broken.
     final QueryableIndex clusteredIndex = buildClusteredSegment();
     final Segment segment = new QueryableIndexSegment(clusteredIndex, SegmentId.dummy("clustered"));
 
@@ -469,14 +472,21 @@ public class SegmentAnalyzerTest extends InitializedNullHandlingTest
             SegmentMetadataQuery.AnalysisType.MINMAX
         )
     );
-    final Map<String, ColumnAnalysis> analysis = analyzer.analyze(segment);
+    final List<Segment> groups = SegmentViewTestUtil.residentViews(segment, CursorBuildSpec.FULL_SCAN);
+    Assertions.assertFalse(groups.isEmpty());
+    long numRows = 0;
+    for (Segment group : groups) {
+      final Map<String, ColumnAnalysis> analysis = analyzer.analyze(group);
 
-    // Clustering column (constant per group) + non-clustering dim + __time all present with right types.
-    Assertions.assertEquals(ColumnType.STRING, analysis.get("tenant").getTypeSignature());
-    Assertions.assertFalse(analysis.get("tenant").isError(), "tenant should not be an error");
-    Assertions.assertEquals(ColumnType.STRING, analysis.get("region").getTypeSignature());
-    Assertions.assertFalse(analysis.get("region").isError(), "region should not be an error");
-    Assertions.assertEquals(ColumnType.LONG, analysis.get(ColumnHolder.TIME_COLUMN_NAME).getTypeSignature());
+      // Clustering column (constant per group) + non-clustering dim + __time all present with right types.
+      Assertions.assertEquals(ColumnType.STRING, analysis.get("tenant").getTypeSignature());
+      Assertions.assertFalse(analysis.get("tenant").isError(), "tenant should not be an error");
+      Assertions.assertEquals(ColumnType.STRING, analysis.get("region").getTypeSignature());
+      Assertions.assertFalse(analysis.get("region").isError(), "region should not be an error");
+      Assertions.assertEquals(ColumnType.LONG, analysis.get(ColumnHolder.TIME_COLUMN_NAME).getTypeSignature());
+      numRows += analyzer.numRows(group);
+    }
+    Assertions.assertEquals(clusteredIndex.getNumRows(), numRows);
   }
 
   private QueryableIndex buildClusteredSegment() throws IOException

@@ -116,7 +116,7 @@ public class ClusteredValueGroupsBaseTableSchema implements BaseTableProjectionS
             type
         );
       }
-      // Per-group ordering is derived by dropping this prefix; pruning + cursor concatenation rely on it.
+      // Per-group ordering is derived by dropping this prefix; pruning + per-group cursors rely on it.
       final String orderingColumn = ordering.get(i).getColumnName();
       if (!clusteringColumn.equals(orderingColumn)) {
         throw DruidException.defensive(

@@ -66,7 +66,10 @@ public class ProjectCursorFactory implements CursorFactory
     return virtualColumns.getColumnCapabilitiesWithFallback(delegate, column);
   }
 
-  private CursorBuildSpec delegateSpec(final CursorBuildSpec spec)
+  /**
+   * Returns the spec that this factory passes to its delegate for {@code spec}.
+   */
+  CursorBuildSpec delegateSpec(final CursorBuildSpec spec)
   {
     return CursorBuildSpec.builder(spec).addBaseVirtualColumns(virtualColumns).build();
   }

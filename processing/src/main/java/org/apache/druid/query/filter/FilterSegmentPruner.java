@@ -96,6 +96,12 @@ public class FilterSegmentPruner implements SegmentPruner
     return true;
   }
 
+  @Override
+  public boolean includeClusterGroups(ClusterGroupTuples clusterGroups)
+  {
+    return possibleInClusterGroups(clusterGroups);
+  }
+
   private boolean possibleInClusterGroups(ClusterGroupTuples clusterGroups)
   {
     final RowSignature clusteringColumns = clusterGroups.clusteringColumns();

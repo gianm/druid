@@ -37,7 +37,12 @@ import org.apache.druid.java.util.common.logger.Logger;
 import org.apache.druid.msq.exec.ExecutionContext;
 import org.apache.druid.msq.exec.FrameContext;
 import org.apache.druid.msq.input.table.SegmentsInputSlice;
+import org.apache.druid.segment.CursorBuildSpec;
+import org.apache.druid.segment.Segment;
 import org.apache.druid.segment.SegmentMapFunction;
+import org.apache.druid.segment.SegmentReference;
+import org.apache.druid.segment.SegmentViewFetcher;
+import org.apache.druid.utils.CloseableUtils;
 
 import java.io.IOException;
 import java.util.List;
@@ -126,7 +131,7 @@ public class BaseLeafFrameProcessorManager implements ProcessorManager<Object, L
       // Prior call would have returned empty Optional.
       throw new NoSuchElementException();
     } else {
-      baseInputQueue.start();
+      baseInputQueue.start(this::acquireViews);
     }
 
     final ListenableFuture<ReadableInputQueue.NumberedReadableInput> nextInput = baseInputQueue.nextInput();
@@ -138,7 +143,10 @@ public class BaseLeafFrameProcessorManager implements ProcessorManager<Object, L
                   withHandoffTag(
                       parentFactory.makeProcessor(
                           numberedInput.input(),
-                          getSegmentMapFnForInputNumber(numberedInput.inputNumber()),
+                          // Segments are already mapped by acquireViews, so processors must not map them again.
+                          numberedInput.input().hasSegment()
+                          ? SegmentMapFunction.IDENTITY
+                          : getSegmentMapFnForInputNumber(numberedInput.inputNumber()),
                           makeLazyResourceHolder(
                               channelQueueRef,
                               channel -> {
@@ -191,8 +199,32 @@ public class BaseLeafFrameProcessorManager implements ProcessorManager<Object, L
       }
     }
 
-    // Close baseInputQueue so all currently-loading segments are released.
+    // Close baseInputQueue so all currently-loading segments, and views that no processor has taken, are released.
     baseInputQueue.close();
+  }
+
+  /**
+   * Maps the base input segment of {@code reference} and acquires the views of the mapped segment that processors need
+   * (see {@link BaseLeafStageProcessor#makeCursorBuildSpec}), so each view is processed as if it were a separate
+   * segment. Returns no views if processors should process the mapped segment as a whole. Used by
+   * {@link #baseInputQueue}, which acquires views ahead of processors.
+   */
+  private ReadableInputQueue.AcquiredSegmentViews acquireViews(final int inputNumber, final SegmentReference reference)
+  {
+    final SegmentReference mappedReference = reference.map(getSegmentMapFnForInputNumber(inputNumber));
+    try {
+      final Segment mapped = mappedReference.getSegmentReference().orElse(null);
+      final SegmentViewFetcher fetcher = mapped == null ? null : mapped.as(SegmentViewFetcher.class);
+      final CursorBuildSpec spec =
+          fetcher == null ? null : parentFactory.makeCursorBuildSpec(mapped, mappedReference.getSegmentDescriptor());
+      return new ReadableInputQueue.AcquiredSegmentViews(
+          mappedReference,
+          spec == null ? List.of() : fetcher.acquireViews(spec)
+      );
+    }
+    catch (Throwable t) {
+      throw CloseableUtils.closeAndWrapInCatch(t, mappedReference);
+    }
   }
 
   private SegmentMapFunction getSegmentMapFnForInputNumber(final int inputNumber)

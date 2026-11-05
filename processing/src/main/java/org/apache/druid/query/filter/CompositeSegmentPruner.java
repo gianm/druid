@@ -20,6 +20,7 @@
 package org.apache.druid.query.filter;
 
 import org.apache.druid.error.DruidException;
+import org.apache.druid.timeline.ClusterGroupTuples;
 import org.apache.druid.timeline.DataSegment;
 
 import java.util.LinkedHashSet;
@@ -45,6 +46,17 @@ public class CompositeSegmentPruner implements SegmentPruner
   {
     for (SegmentPruner pruner : pruners) {
       if (!pruner.include(segment)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  @Override
+  public boolean includeClusterGroups(ClusterGroupTuples clusterGroups)
+  {
+    for (SegmentPruner pruner : pruners) {
+      if (!pruner.includeClusterGroups(clusterGroups)) {
         return false;
       }
     }

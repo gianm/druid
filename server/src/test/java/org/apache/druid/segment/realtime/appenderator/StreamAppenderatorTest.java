@@ -28,7 +28,12 @@ import com.google.common.util.concurrent.ListenableFuture;
 import org.apache.druid.data.input.Committer;
 import org.apache.druid.data.input.InputRow;
 import org.apache.druid.data.input.MapBasedInputRow;
+import org.apache.druid.data.input.impl.ClusteredValueGroupsBaseTableProjectionSpec;
+import org.apache.druid.data.input.impl.LongDimensionSchema;
+import org.apache.druid.data.input.impl.StringDimensionSchema;
+import org.apache.druid.data.input.impl.TimestampSpec;
 import org.apache.druid.error.DruidException;
+import org.apache.druid.indexer.granularity.SegmentGranularitySpec;
 import org.apache.druid.java.util.common.DateTimes;
 import org.apache.druid.java.util.common.Intervals;
 import org.apache.druid.java.util.common.Pair;
@@ -45,8 +50,11 @@ import org.apache.druid.query.SegmentDescriptor;
 import org.apache.druid.query.TableDataSource;
 import org.apache.druid.query.aggregation.LongSumAggregatorFactory;
 import org.apache.druid.query.context.ResponseContext;
+import org.apache.druid.query.filter.DimFilter;
+import org.apache.druid.query.filter.EqualityFilter;
 import org.apache.druid.query.policy.NoRestrictionPolicy;
 import org.apache.druid.query.policy.RestrictAllTablesPolicyEnforcer;
+import org.apache.druid.query.policy.RowFilterPolicy;
 import org.apache.druid.query.scan.ScanQuery;
 import org.apache.druid.query.scan.ScanResultValue;
 import org.apache.druid.query.spec.MultipleSpecificSegmentSpec;
@@ -55,6 +63,7 @@ import org.apache.druid.query.timeseries.TimeseriesResultValue;
 import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.incremental.RowIngestionMeters;
 import org.apache.druid.segment.incremental.SimpleRowIngestionMeters;
+import org.apache.druid.segment.indexing.DataSchema;
 import org.apache.druid.segment.metadata.CentralizedDatasourceSchemaConfig;
 import org.apache.druid.segment.realtime.SegmentGenerationMetrics;
 import org.apache.druid.segment.realtime.sink.Committers;
@@ -2696,6 +2705,187 @@ public class StreamAppenderatorTest extends InitializedNullHandlingTest
         Intervals.of(interval),
         version,
         new LinearShardSpec(partitionNum)
+    );
+  }
+
+  @Test
+  public void testQueryClusteredBaseTableWithPolicies() throws Exception
+  {
+    try (
+        final StreamAppenderatorTester tester =
+            new StreamAppenderatorTester.Builder().maxRowsInMemory(2)
+                                                  .basePersistDirectory(temporaryFolder.newFolder())
+                                                  .withDataSchema(clusteredBaseTableSchema())
+                                                  .withPolicyEnforcer(new RestrictAllTablesPolicyEnforcer(null))
+                                                  .useV10(true)
+                                                  .build()) {
+      final Appenderator appenderator = tester.getAppenderator();
+      appenderator.startJob();
+      // Two rows per hydrant, so the first hydrant is persisted and the second stays in memory.
+      final Supplier<Committer> committer = Suppliers.ofInstance(Committers.nil());
+      appenderator.add(IDENTIFIERS.get(0), clusterRow("2000T00:00", "acme", "us-east-1", 1), committer);
+      appenderator.add(IDENTIFIERS.get(0), clusterRow("2000T00:01", "globex", "eu-west-1", 2), committer);
+      appenderator.add(IDENTIFIERS.get(0), clusterRow("2000T00:02", "acme", "us-west-2", 4), committer);
+      appenderator.add(IDENTIFIERS.get(0), clusterRow("2000T00:03", "globex", "eu-west-1", 8), committer);
+
+      final TimeseriesQuery unrestricted = Druids.newTimeseriesQueryBuilder()
+                                                 .dataSource(StreamAppenderatorTester.DATASOURCE)
+                                                 .intervals(ImmutableList.of(Intervals.of("2000/2001")))
+                                                 .aggregators(new LongSumAggregatorFactory("met", "met"))
+                                                 .granularity(Granularities.ALL)
+                                                 .build();
+      final DruidException e = Assertions.assertThrows(
+          DruidException.class,
+          () -> QueryPlus.wrap(unrestricted).run(appenderator, ResponseContext.createEmpty()).toList()
+      );
+      Assertions.assertEquals(DruidException.Category.FORBIDDEN, e.getCategory());
+
+      // A policy on a non-clustering column filters the rows of every cluster group of every hydrant.
+      Assertions.assertEquals(
+          ImmutableList.of(new Result<>(DateTimes.of("2000"), new TimeseriesResultValue(ImmutableMap.of("met", 10L)))),
+          QueryPlus.wrap(
+                       unrestricted.withDataSource(
+                           restrictedClusteredTable(new EqualityFilter("region", ColumnType.STRING, "eu-west-1", null))
+                       )
+                   )
+                   .run(appenderator, ResponseContext.createEmpty())
+                   .toList()
+      );
+
+      // A policy on the clustering column also rules out cluster groups, even if the query filter does not.
+      Assertions.assertEquals(
+          ImmutableList.of(new Result<>(DateTimes.of("2000"), new TimeseriesResultValue(ImmutableMap.of("met", 5L)))),
+          QueryPlus.wrap(
+                       unrestricted.withDataSource(
+                           restrictedClusteredTable(new EqualityFilter("tenant", ColumnType.STRING, "acme", null))
+                       )
+                   )
+                   .run(appenderator, ResponseContext.createEmpty())
+                   .toList()
+      );
+    }
+  }
+
+  @Test
+  public void testQueryClusteredBaseTable() throws Exception
+  {
+    // The base table is clustered by tenant, so every hydrant (persisted or in memory) is split into cluster groups,
+    // which are queried as if they were separate hydrants.
+    try (
+        final StreamAppenderatorTester tester =
+            new StreamAppenderatorTester.Builder().maxRowsInMemory(2)
+                                                  .basePersistDirectory(temporaryFolder.newFolder())
+                                                  .withDataSchema(clusteredBaseTableSchema())
+                                                  .useV10(true)
+                                                  .build()) {
+      final Appenderator appenderator = tester.getAppenderator();
+      appenderator.startJob();
+      // Two rows per hydrant, so the first hydrant is persisted and the second stays in memory.
+      final Supplier<Committer> committer = Suppliers.ofInstance(Committers.nil());
+      appenderator.add(IDENTIFIERS.get(0), clusterRow("2000T00:00", "acme", "us-east-1", 1), committer);
+      appenderator.add(IDENTIFIERS.get(0), clusterRow("2000T00:01", "globex", "eu-west-1", 2), committer);
+      appenderator.add(IDENTIFIERS.get(0), clusterRow("2000T00:02", "acme", "us-west-2", 4), committer);
+      appenderator.add(IDENTIFIERS.get(0), clusterRow("2000T00:03", "globex", "eu-west-1", 8), committer);
+
+      final TimeseriesQuery timeseries = Druids.newTimeseriesQueryBuilder()
+                                               .dataSource(StreamAppenderatorTester.DATASOURCE)
+                                               .intervals(ImmutableList.of(Intervals.of("2000/2001")))
+                                               .aggregators(new LongSumAggregatorFactory("met", "met"))
+                                               .granularity(Granularities.ALL)
+                                               .build();
+      Assertions.assertEquals(
+          ImmutableList.of(new Result<>(DateTimes.of("2000"), new TimeseriesResultValue(ImmutableMap.of("met", 15L)))),
+          QueryPlus.wrap(timeseries).run(appenderator, ResponseContext.createEmpty()).toList()
+      );
+      Assertions.assertEquals(
+          ImmutableList.of(new Result<>(DateTimes.of("2000"), new TimeseriesResultValue(ImmutableMap.of("met", 5L)))),
+          QueryPlus.wrap(timeseries.withDimFilter(new EqualityFilter("tenant", ColumnType.STRING, "acme", null)))
+                   .run(appenderator, ResponseContext.createEmpty())
+                   .toList()
+      );
+
+      // A time-ordered scan merges the rows of every cluster group of every hydrant by time.
+      final ScanQuery scan = Druids.newScanQueryBuilder()
+                                   .dataSource(StreamAppenderatorTester.DATASOURCE)
+                                   .intervals(
+                                       new MultipleSpecificSegmentSpec(
+                                           ImmutableList.of(
+                                               new SegmentDescriptor(
+                                                   Intervals.of("2000/2001"),
+                                                   IDENTIFIERS.get(0).getVersion(),
+                                                   IDENTIFIERS.get(0).getShardSpec().getPartitionNum()
+                                               )
+                                           )
+                                       )
+                                   )
+                                   .columns("__time", "tenant", "met")
+                                   .order(Order.ASCENDING)
+                                   .resultFormat(ScanQuery.ResultFormat.RESULT_FORMAT_COMPACTED_LIST)
+                                   .build();
+      final List<List<Object>> rows = new ArrayList<>();
+      for (ScanResultValue result : QueryPlus.wrap(scan).run(appenderator, ResponseContext.createEmpty()).toList()) {
+        for (Object event : (List<?>) result.getEvents()) {
+          rows.add((List<Object>) event);
+        }
+      }
+      Assertions.assertEquals(
+          ImmutableList.of(
+              Arrays.asList(DateTimes.of("2000T00:00").getMillis(), "acme", 1L),
+              Arrays.asList(DateTimes.of("2000T00:01").getMillis(), "globex", 2L),
+              Arrays.asList(DateTimes.of("2000T00:02").getMillis(), "acme", 4L),
+              Arrays.asList(DateTimes.of("2000T00:03").getMillis(), "globex", 8L)
+          ),
+          rows
+      );
+
+      // Realtime segments carry no clustering values for the Broker to prune them with, so a filter can rule out every
+      // cluster group of every hydrant here, leaving no runners to merge.
+      Assertions.assertEquals(
+          List.of(),
+          QueryPlus.wrap(
+              Druids.ScanQueryBuilder.copy(scan)
+                                     .filters(new EqualityFilter("tenant", ColumnType.STRING, "nobody", null))
+                                     .build()
+          ).run(appenderator, ResponseContext.createEmpty()).toList()
+      );
+    }
+  }
+
+  private static DataSchema clusteredBaseTableSchema()
+  {
+    final ClusteredValueGroupsBaseTableProjectionSpec clusterSpec =
+        ClusteredValueGroupsBaseTableProjectionSpec.builder()
+            .columns(
+                new StringDimensionSchema("tenant"),
+                // __time is the first non-clustering column, so each cluster group is time-sorted.
+                new LongDimensionSchema("__time"),
+                new StringDimensionSchema("region"),
+                new LongDimensionSchema("met")
+            )
+            .clusteringColumns("tenant")
+            .build();
+    return DataSchema.builder()
+                     .withDataSource(StreamAppenderatorTester.DATASOURCE)
+                     .withTimestamp(new TimestampSpec("ts", "auto", null))
+                     .withSegmentGranularity(new SegmentGranularitySpec(Granularities.MINUTE, null))
+                     .withBaseTable(clusterSpec)
+                     .build();
+  }
+
+  private static RestrictedDataSource restrictedClusteredTable(DimFilter rowFilter)
+  {
+    return RestrictedDataSource.create(
+        TableDataSource.create(StreamAppenderatorTester.DATASOURCE),
+        RowFilterPolicy.from(rowFilter)
+    );
+  }
+
+  private static InputRow clusterRow(String ts, String tenant, String region, long met)
+  {
+    return new MapBasedInputRow(
+        DateTimes.of(ts).getMillis(),
+        ImmutableList.of("tenant", "region", "met"),
+        ImmutableMap.of("tenant", tenant, "region", region, "met", met)
     );
   }
 

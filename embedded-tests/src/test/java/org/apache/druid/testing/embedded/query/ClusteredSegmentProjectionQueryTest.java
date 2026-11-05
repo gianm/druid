@@ -44,6 +44,7 @@ import org.apache.druid.testing.embedded.EmbeddedIndexer;
 import org.apache.druid.testing.embedded.EmbeddedOverlord;
 import org.apache.druid.testing.embedded.EmbeddedRouter;
 import org.apache.druid.testing.embedded.junit5.EmbeddedClusterTestBase;
+import org.apache.druid.testing.embedded.msq.EmbeddedMSQApis;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -81,13 +82,19 @@ class ClusteredSegmentProjectionQueryTest extends EmbeddedClusterTestBase
   private final EmbeddedCoordinator coordinator = new EmbeddedCoordinator();
   private final EmbeddedRouter router = new EmbeddedRouter();
 
+  private EmbeddedMSQApis msqApis;
+
   @Override
   public EmbeddedDruidCluster createCluster()
   {
     historical.setServerMemory(300_000_000);
 
     broker.setServerMemory(200_000_000)
-          .addProperty("druid.sql.planner.enableSysQueriesTable", "true");
+          .addProperty("druid.sql.planner.enableSysQueriesTable", "true")
+          .addProperty("druid.msq.dart.controller.heapFraction", "0.9");
+
+    historical.addProperty("druid.msq.dart.worker.heapFraction", "0.9")
+              .addProperty("druid.msq.dart.worker.concurrentQueries", "1");
 
     coordinator.addProperty("druid.manager.segments.useIncrementalCache", "always");
 
@@ -106,6 +113,7 @@ class ClusteredSegmentProjectionQueryTest extends EmbeddedClusterTestBase
         // Clustered base-table segments can only be written in the V10 segment format.
         .addCommonProperty("druid.indexer.task.buildV10", "true")
         .addCommonProperty("druid.monitoring.emissionPeriod", "PT1s")
+        .addCommonProperty("druid.msq.dart.enabled", "true")
         .addServer(coordinator)
         .addServer(overlord)
         .addServer(indexer)
@@ -117,6 +125,7 @@ class ClusteredSegmentProjectionQueryTest extends EmbeddedClusterTestBase
   @BeforeAll
   void loadData() throws IOException
   {
+    msqApis = new EmbeddedMSQApis(cluster, overlord);
     dataSource = "clustered-" + IdUtils.getRandomId();
     ingestClusteredSegmentWithProjection();
   }
@@ -152,11 +161,10 @@ class ClusteredSegmentProjectionQueryTest extends EmbeddedClusterTestBase
    * <p>
    * Regression test for a clustered read-path bug: {@code countryName} is a non-clustering column whose
    * per-cluster-group dictionaries assign different values the same local ID (group {@code #en}: {@code {US, CA}},
-   * group {@code #fr}: {@code {FR, US}}). A dictionary-id-keyed group-by over the concatenated per-group cursors (see
-   * {@link org.apache.druid.segment.ConcatenatingCursor}) would conflate those, returning {@code FR,10 / US,17}. The
-   * fix makes the concatenating cursor report non-clustering columns as non-dictionary-encoded (see
-   * {@link org.apache.druid.segment.projections.ClusteringColumnSelectorFactory#getColumnCapabilities}), forcing
-   * value-based grouping, so the correct {@code CA,3 / FR,7 / US,17} is returned.
+   * group {@code #fr}: {@code {FR, US}}). A dictionary-id-keyed group-by over a cursor spanning both groups would
+   * conflate those, returning {@code FR,10 / US,17}. Each cluster group is processed as a separate segment instead (see
+   * {@link org.apache.druid.segment.SplitSegment}), with its own dictionary ids, so the correct
+   * {@code CA,3 / FR,7 / US,17} is returned.
    */
   @Test
   void testNoProjectionsServesFromClusteredBaseTable()
@@ -229,6 +237,45 @@ class ClusteredSegmentProjectionQueryTest extends EmbeddedClusterTestBase
         "SELECT \"countryName\", SUM(\"delta\") FROM \"%s\" WHERE \"channel\" = '#en' GROUP BY 1 ORDER BY 1",
         dataSource,
         "CA,3\nUS,15"
+    );
+  }
+
+  @Test
+  void testDartGroupByNonClusteringColumn()
+  {
+    // Dart reads each cluster group as a separate segment input; see BaseLeafFrameProcessorManager. Whether or not the
+    // projection serves this query, the result must match the native one.
+    Assertions.assertEquals(
+        "CA,3\nFR,7\nUS,17",
+        msqApis.runDartSql("SELECT \"countryName\", SUM(\"delta\") FROM \"%s\" GROUP BY 1 ORDER BY 1", dataSource)
+    );
+  }
+
+  @Test
+  void testDartGroupByClusteringColumn()
+  {
+    Assertions.assertEquals(
+        "#en,18\n#fr,9",
+        msqApis.runDartSql("SELECT \"channel\", SUM(\"delta\") FROM \"%s\" GROUP BY 1 ORDER BY 1", dataSource)
+    );
+  }
+
+  @Test
+  void testDartScan()
+  {
+    Assertions.assertEquals(
+        "#en,US,10\n#en,US,5\n#en,CA,3\n#fr,FR,7\n#fr,US,2",
+        msqApis.runDartSql(
+            "SELECT \"channel\", \"countryName\", \"delta\" FROM \"%s\" ORDER BY \"__time\"",
+            dataSource
+        )
+    );
+    Assertions.assertEquals(
+        "CA,3\nUS,15",
+        msqApis.runDartSql(
+            "SELECT \"countryName\", SUM(\"delta\") FROM \"%s\" WHERE \"channel\" = '#en' GROUP BY 1 ORDER BY 1",
+            dataSource
+        )
     );
   }
 

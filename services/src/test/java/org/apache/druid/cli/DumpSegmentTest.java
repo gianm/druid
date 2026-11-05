@@ -22,6 +22,7 @@ package org.apache.druid.cli;
 import com.fasterxml.jackson.databind.InjectableValues;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Iterables;
 import com.google.inject.Injector;
 import com.google.inject.Key;
 import com.google.inject.name.Names;
@@ -38,31 +39,37 @@ import org.apache.druid.initialization.ServerInjectorBuilder;
 import org.apache.druid.jackson.DefaultObjectMapper;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.granularity.Granularities;
-import org.apache.druid.java.util.common.guava.Sequence;
-import org.apache.druid.java.util.common.guava.Sequences;
 import org.apache.druid.java.util.common.io.Closer;
 import org.apache.druid.math.expr.ExprMacroTable;
-import org.apache.druid.query.DirectQueryProcessingPool;
 import org.apache.druid.query.NestedDataTestUtils;
-import org.apache.druid.query.Query;
-import org.apache.druid.query.QueryRunner;
-import org.apache.druid.query.QueryRunnerFactory;
 import org.apache.druid.query.QueryRunnerFactoryConglomerate;
+import org.apache.druid.query.QueryRunnerTestHelper;
+import org.apache.druid.query.SegmentDescriptor;
+import org.apache.druid.query.TableDataSource;
 import org.apache.druid.query.aggregation.AggregatorFactory;
 import org.apache.druid.query.aggregation.CountAggregatorFactory;
-import org.apache.druid.query.context.QueryContextParameter;
 import org.apache.druid.query.expression.TestExprMacroTable;
+import org.apache.druid.query.metadata.SegmentMetadataQueryConfig;
+import org.apache.druid.query.metadata.SegmentMetadataQueryQueryToolChest;
+import org.apache.druid.query.metadata.SegmentMetadataQueryRunnerFactory;
+import org.apache.druid.query.metadata.metadata.ColumnAnalysis;
+import org.apache.druid.query.metadata.metadata.ListColumnIncluderator;
+import org.apache.druid.query.metadata.metadata.SegmentAnalysis;
+import org.apache.druid.query.metadata.metadata.SegmentMetadataQuery;
+import org.apache.druid.query.spec.SpecificSegmentSpec;
 import org.apache.druid.segment.DefaultColumnFormatConfig;
 import org.apache.druid.segment.IndexBuilder;
 import org.apache.druid.segment.IndexIO;
 import org.apache.druid.segment.IndexSpec;
 import org.apache.druid.segment.QueryableIndex;
 import org.apache.druid.segment.Segment;
+import org.apache.druid.segment.SegmentViewTestUtil;
 import org.apache.druid.segment.TestHelper;
 import org.apache.druid.segment.TestIndex;
 import org.apache.druid.segment.column.BaseColumnHolder;
 import org.apache.druid.segment.column.ColumnConfig;
 import org.apache.druid.segment.column.ColumnIndexSupplier;
+import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.file.SegmentFileMetadata;
 import org.apache.druid.segment.incremental.IncrementalIndexSchema;
 import org.apache.druid.segment.index.semantic.DictionaryEncodedStringValueIndex;
@@ -79,6 +86,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.util.Collections;
+import java.util.EnumSet;
 import java.util.List;
 
 public class DumpSegmentTest extends InitializedNullHandlingTest
@@ -101,28 +109,21 @@ public class DumpSegmentTest extends InitializedNullHandlingTest
   }
 
   @Test
-  public void testExecuteQuery()
+  public void testExecuteSegmentMetadataQuery()
   {
-    Injector injector = Mockito.mock(Injector.class);
-    QueryRunnerFactoryConglomerate conglomerate = Mockito.mock(QueryRunnerFactoryConglomerate.class);
-    QueryRunnerFactory factory = Mockito.mock(QueryRunnerFactory.class, Mockito.RETURNS_DEEP_STUBS);
-    QueryRunner runner = Mockito.mock(QueryRunner.class);
-    QueryRunner mergeRunner = Mockito.mock(QueryRunner.class);
-    Query query = Mockito.mock(Query.class);
-    QueryableIndex index = Mockito.mock(QueryableIndex.class);
-    Sequence expected = Sequences.simple(Collections.singletonList(123));
-    Mockito.when(query.withOverriddenContext(ArgumentMatchers.any())).thenReturn(query);
-    Mockito.when(query.withOverriddenContext(ArgumentMatchers.any(QueryContextParameter.class), ArgumentMatchers.any()))
-           .thenReturn(query);
-    Mockito.when(injector.getInstance(QueryRunnerFactoryConglomerate.class)).thenReturn(conglomerate);
-    Mockito.when(conglomerate.findFactory(ArgumentMatchers.any())).thenReturn(factory);
-    Mockito.when(factory.createRunner(ArgumentMatchers.any())).thenReturn(runner);
-    Mockito.when(factory.getToolchest().mergeResults(factory.mergeRunners(DirectQueryProcessingPool.INSTANCE, ImmutableList.of(runner)))).thenReturn(mergeRunner);
-    Mockito.when(factory.getToolchest().mergeResults(factory.mergeRunners(DirectQueryProcessingPool.INSTANCE, ImmutableList.of(runner)), true)).thenReturn(mergeRunner);
-    Mockito.when(mergeRunner.run(ArgumentMatchers.any(), ArgumentMatchers.any())).thenReturn(expected);
-    Mockito.when(index.getOrdering()).thenReturn(Collections.emptyList());
-    Sequence actual = DumpSegment.executeQuery(injector, index, query);
-    Assertions.assertSame(expected, actual);
+    final SegmentAnalysis analysis = runSegmentMetadataQuery(TestIndex.getMMappedTestIndex(), List.of("market"));
+    Assertions.assertEquals(TestIndex.getMMappedTestIndex().getNumRows(), analysis.getNumRows());
+    assertStringColumnsAnalyzed(analysis, List.of("market"));
+  }
+
+  @Test
+  public void testExecuteSegmentMetadataQueryOnClusteredSegment() throws IOException
+  {
+    // Analyzing size reads each string column through a cursor, which cannot span cluster groups.
+    final QueryableIndex index = closer.register(SegmentViewTestUtil.buildThreeGroupIndex(tempFolder.newFolder()));
+    final SegmentAnalysis analysis = runSegmentMetadataQuery(index, List.of("tenant", "region"));
+    Assertions.assertEquals(4, analysis.getNumRows());
+    assertStringColumnsAnalyzed(analysis, List.of("tenant", "region"));
   }
 
   @Test
@@ -347,6 +348,42 @@ public class DumpSegmentTest extends InitializedNullHandlingTest
     return bob.buildMMappedIndexFile();
   }
 
+
+  private static SegmentAnalysis runSegmentMetadataQuery(final QueryableIndex index, final List<String> columns)
+  {
+    final Injector injector = Mockito.mock(Injector.class);
+    final QueryRunnerFactoryConglomerate conglomerate = Mockito.mock(QueryRunnerFactoryConglomerate.class);
+    Mockito.when(injector.getInstance(QueryRunnerFactoryConglomerate.class)).thenReturn(conglomerate);
+    Mockito.doReturn(
+        new SegmentMetadataQueryRunnerFactory(
+            new SegmentMetadataQueryQueryToolChest(new SegmentMetadataQueryConfig()),
+            QueryRunnerTestHelper.NOOP_QUERYWATCHER
+        )
+    ).when(conglomerate).findFactory(ArgumentMatchers.any());
+
+    // Like the query that DumpSegment runs for "--dump metadata".
+    final SegmentMetadataQuery query = new SegmentMetadataQuery(
+        new TableDataSource("dataSource"),
+        new SpecificSegmentSpec(new SegmentDescriptor(index.getDataInterval(), "0", 0)),
+        new ListColumnIncluderator(columns),
+        false,
+        null,
+        EnumSet.allOf(SegmentMetadataQuery.AnalysisType.class),
+        false,
+        null,
+        null
+    );
+    return Iterables.getOnlyElement(DumpSegment.executeQuery(injector, index, query).toList());
+  }
+
+  private static void assertStringColumnsAnalyzed(final SegmentAnalysis analysis, final List<String> columns)
+  {
+    for (String column : columns) {
+      final ColumnAnalysis columnAnalysis = analysis.getColumns().get(column);
+      Assertions.assertFalse(columnAnalysis.isError(), columnAnalysis.getErrorMessage());
+      Assertions.assertEquals(ColumnType.STRING, columnAnalysis.getTypeSignature(), column);
+    }
+  }
 
   public static List<Segment> createSegments(
       TemporaryFolderExtension tempFolder,

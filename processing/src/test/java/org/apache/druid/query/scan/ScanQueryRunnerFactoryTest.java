@@ -346,6 +346,132 @@ public class ScanQueryRunnerFactoryTest
 
 
     @Test
+    public void testMergeRunnersDescendingWithMoreRunnersThanSegments()
+    {
+      // Segment walkers may process one segment with several runners (hydrants, or cluster groups), passing
+      // SinkQueryRunners to pair each runner with its segment's interval.
+      final Interval day1 = Intervals.of("2015-01-01/2015-01-02");
+      final Interval day2 = Intervals.of("2015-01-02/2015-01-03");
+      final ScanQuery.ResultFormat resultFormat = ScanQuery.ResultFormat.RESULT_FORMAT_COMPACTED_LIST;
+      final QueryRunner<ScanResultValue> runner = FACTORY.mergeRunners(
+          Execs.directExecutor(),
+          new SinkQueryRunners<>(
+              List.of(
+                  Pair.of(day1, descendingRunner(resultFormat, "2015-01-01T03", "2015-01-01T01")),
+                  Pair.of(day1, descendingRunner(resultFormat, "2015-01-01T02")),
+                  Pair.of(day2, descendingRunner(resultFormat, "2015-01-02T02", "2015-01-02T01"))
+              )
+          )
+      );
+
+      final List<ScanResultValue> output = runner.run(
+          QueryPlus.wrap(
+              Druids.newScanQueryBuilder()
+                    .dataSource("foo")
+                    .intervals(
+                        new MultipleSpecificSegmentSpec(
+                            List.of(new SegmentDescriptor(day1, "v0", 0), new SegmentDescriptor(day2, "v0", 0))
+                        )
+                    )
+                    .order(Order.DESCENDING)
+                    .resultFormat(resultFormat)
+                    .build()
+          ),
+          ResponseContext.createEmpty()
+      ).toList();
+
+      final List<Long> timestamps = new ArrayList<>();
+      for (ScanResultValue srv : output) {
+        timestamps.add(srv.getFirstEventTimestamp(resultFormat));
+      }
+      Assertions.assertEquals(
+          Stream.of("2015-01-02T02", "2015-01-02T01", "2015-01-01T03", "2015-01-01T02", "2015-01-01T01")
+                .map(ts -> DateTimes.of(ts).getMillis())
+                .collect(Collectors.toList()),
+          timestamps
+      );
+    }
+
+    @Test
+    public void testMergeRunnersGuardrailsCountEachRunnerOfOnePartition()
+    {
+      // The cluster groups of one segment are separate runners for the same partition. Each counts against
+      // maxSegmentPartitionsOrderedInMemory, since the merge holds a cursor open for each one.
+      final SegmentDescriptor descriptor = new SegmentDescriptor(Intervals.ETERNITY, "v0", 0);
+      final List<SinkQueryRunners.PartitionRunner<ScanResultValue>> partitionRunners =
+          IntStream.range(0, CONFIG.getMaxSegmentPartitionsOrderedInMemory() + 1)
+                   .mapToObj(
+                       i -> new SinkQueryRunners.PartitionRunner<ScanResultValue>(
+                           descriptor.getInterval(),
+                           descriptor,
+                           (queryPlus, responseContext) -> Sequences.empty()
+                       )
+                   )
+                   .collect(Collectors.toList());
+      final QueryRunner<ScanResultValue> runner = FACTORY.mergeRunners(
+          Execs.directExecutor(),
+          SinkQueryRunners.fromPartitionRunners(partitionRunners)
+      );
+
+      final ResourceLimitExceededException ex = Assertions.assertThrows(
+          ResourceLimitExceededException.class,
+          () -> runner.run(
+              QueryPlus.wrap(
+                  Druids.newScanQueryBuilder()
+                        .dataSource("foo")
+                        .limit(CONFIG.getMaxRowsQueuedForOrdering() + 1)
+                        .intervals(new MultipleSpecificSegmentSpec(List.of(descriptor)))
+                        .order(Order.ASCENDING)
+                        .build()
+              ),
+              ResponseContext.createEmpty()
+          )
+      );
+      Assertions.assertTrue(
+          ex.getMessage().startsWith("Time ordering is not supported for a Scan query with 5 segments per time chunk"),
+          ex.getMessage()
+      );
+    }
+
+    @Test
+    public void testMergeRunnersWithNoRunners()
+    {
+      // Segment walkers have no runners when the filter rules out every cluster group of every segment.
+      final SegmentDescriptor descriptor = new SegmentDescriptor(Intervals.ETERNITY, "v0", 0);
+      final QueryRunner<ScanResultValue> runner = FACTORY.mergeRunners(
+          Execs.directExecutor(),
+          SinkQueryRunners.fromPartitionRunners(List.of())
+      );
+
+      for (Order order : List.of(Order.ASCENDING, Order.DESCENDING)) {
+        // No limit, so the n-way merge strategy is used.
+        final List<ScanResultValue> output = runner.run(
+            QueryPlus.wrap(
+                Druids.newScanQueryBuilder()
+                      .dataSource("foo")
+                      .intervals(new MultipleSpecificSegmentSpec(List.of(descriptor)))
+                      .order(order)
+                      .build()
+            ),
+            ResponseContext.createEmpty()
+        ).toList();
+        Assertions.assertEquals(List.of(), output);
+      }
+    }
+
+    private static QueryRunner<ScanResultValue> descendingRunner(
+        ScanQuery.ResultFormat resultFormat,
+        String... timestamps
+    )
+    {
+      final List<ScanResultValue> values = new ArrayList<>();
+      for (String timestamp : timestamps) {
+        values.add(ScanQueryTestHelper.generateScanResultValue(DateTimes.of(timestamp).getMillis(), resultFormat, 1));
+      }
+      return (queryPlus, responseContext) -> Sequences.simple(values);
+    }
+
+    @Test
     public void testMergeRunnersGuardrailsExceeded()
     {
       final QueryRunner<ScanResultValue> runner = FACTORY.mergeRunners(

@@ -153,6 +153,7 @@ import org.apache.druid.segment.QueryableIndexCursorFactory;
 import org.apache.druid.segment.QueryableIndexPhysicalSegmentInspector;
 import org.apache.druid.segment.RowCountInspector;
 import org.apache.druid.segment.Segment;
+import org.apache.druid.segment.SegmentViewTestUtil;
 import org.apache.druid.segment.column.ColumnConfig;
 import org.apache.druid.segment.column.ColumnHolder;
 import org.apache.druid.segment.column.RowSignature;
@@ -1509,12 +1510,21 @@ public class MSQTestBase extends BaseCalciteQueryTest
               Assertions.assertNotNull(queryableIndex.getMetadata().getClusteredBaseTable());
             }
 
-            for (List<Object> row : FrameTestUtil.readRowsFromCursorFactory(cursorFactory).toList()) {
-              // transforming rows for sketch assertions
-              List<Object> transformedRow = row.stream()
-                                               .map(MSQTestBase.this::segmentToAssertionValueMapper)
-                                               .collect(Collectors.toList());
-              segmentIdVsOutputRowsMap.computeIfAbsent(dataSegment.getId(), r -> new ArrayList<>()).add(transformedRow);
+            // Read clustered segments one cluster group at a time, since a cursor cannot span groups. Use the whole
+            // segment's signature, since each group's covers only the group's own columns.
+            for (CursorFactory groupCursorFactory : SegmentViewTestUtil.viewCursorFactories(queryableIndex)) {
+              for (List<Object> row : FrameTestUtil.readRowsFromCursorFactory(
+                  groupCursorFactory,
+                  cursorFactory.getRowSignature(),
+                  false
+              ).toList()) {
+                // transforming rows for sketch assertions
+                List<Object> transformedRow = row.stream()
+                                                 .map(MSQTestBase.this::segmentToAssertionValueMapper)
+                                                 .collect(Collectors.toList());
+                segmentIdVsOutputRowsMap.computeIfAbsent(dataSegment.getId(), r -> new ArrayList<>())
+                                        .add(transformedRow);
+              }
             }
           }
         }

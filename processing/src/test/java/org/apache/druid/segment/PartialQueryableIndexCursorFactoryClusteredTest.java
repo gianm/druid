@@ -64,6 +64,7 @@ import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
@@ -172,7 +173,7 @@ class PartialQueryableIndexCursorFactoryClusteredTest extends PartialQueryableIn
   }
 
   @Test
-  void testFilterOnClusteringColumnDownloadsOnlySurvivingGroup() throws IOException
+  void testWholeSegmentFactoryRefusesEvenIfFilterLeavesOneGroup() throws IOException
   {
     final CountingRangeReader rangeReader = new CountingRangeReader(segmentDir);
     try (IndexAndMapper opened = openIndex(rangeReader, "filter_acme")) {
@@ -181,24 +182,10 @@ class PartialQueryableIndexCursorFactoryClusteredTest extends PartialQueryableIn
                                                   .setFilter(new EqualityFilter("tenant", ColumnType.STRING, "acme", null))
                                                   .build();
 
-      try (AsyncCursorHolder asyncHolder = factory.makeCursorHolderAsync(spec);
-           CursorHolder holder = asyncHolder.release()) {
-        // Only the acme group survives the clustering-column filter, so only its rows are returned.
-        Assertions.assertEquals(
-            List.of(List.of("acme", "us-east-1"), List.of("acme", "us-west-2")),
-            scanTenantRegion(holder)
-        );
-
-        final Set<String> downloaded = opened.mapper().getDownloadedFiles();
-        // The acme group's columns were materialized.
-        Assertions.assertTrue(downloaded.contains(ACME_BUNDLE + "/region"), "got: " + downloaded);
-        Assertions.assertTrue(downloaded.contains(ACME_BUNDLE + "/__time"), "got: " + downloaded);
-        // The globex group bundle was pruned by metadata-only resolution and never touched.
-        Assertions.assertTrue(
-            downloaded.stream().noneMatch(f -> f.startsWith(GLOBEX_BUNDLE + "/")),
-            "globex group must not be downloaded; got: " + downloaded
-        );
-      }
+      // A cursor cannot span groups, so the whole-segment factory refuses, before downloading anything, even though
+      // only the acme group survives the filter. Callers read the acme group through its view instead.
+      Assertions.assertThrows(DruidException.class, () -> factory.makeCursorHolderAsync(spec));
+      Assertions.assertTrue(opened.mapper().getDownloadedFiles().isEmpty());
     }
   }
 
@@ -224,28 +211,37 @@ class PartialQueryableIndexCursorFactoryClusteredTest extends PartialQueryableIn
   }
 
   @Test
-  void testFullScanConcatenatesAllGroups() throws IOException
+  void testFullScanReadsEachGroup() throws IOException
   {
     final CountingRangeReader rangeReader = new CountingRangeReader(segmentDir);
     try (IndexAndMapper opened = openIndex(rangeReader, "full_scan")) {
-      final PartialQueryableIndexCursorFactory factory = factory(opened.index());
+      // A cursor cannot span groups, so the whole-segment factory refuses, before downloading anything.
+      Assertions.assertThrows(
+          DruidException.class,
+          () -> factory(opened.index()).makeCursorHolderAsync(CursorBuildSpec.FULL_SCAN)
+      );
+      Assertions.assertTrue(opened.mapper().getDownloadedFiles().isEmpty());
 
-      try (AsyncCursorHolder asyncHolder = factory.makeCursorHolderAsync(CursorBuildSpec.FULL_SCAN);
-           CursorHolder holder = asyncHolder.release()) {
-        // Groups are concatenated in clustering (dictionary id) order: acme then globex, clustering constant injected.
-        Assertions.assertEquals(
-            List.of(
-                List.of("acme", "us-east-1"),
-                List.of("acme", "us-west-2"),
-                List.of("globex", "eu-west-1")
-            ),
-            scanTenantRegion(holder)
-        );
-
-        final Set<String> downloaded = opened.mapper().getDownloadedFiles();
-        Assertions.assertTrue(downloaded.contains(ACME_BUNDLE + "/region"), "got: " + downloaded);
-        Assertions.assertTrue(downloaded.contains(GLOBEX_BUNDLE + "/region"), "got: " + downloaded);
+      // Groups come in clustering (dictionary id) order: acme then globex, clustering constant injected.
+      final List<List<String>> rows = new ArrayList<>();
+      for (CursorFactory groupFactory : groupFactories(opened.index(), noOpAcquirer(directExec()))) {
+        try (AsyncCursorHolder asyncHolder = groupFactory.makeCursorHolderAsync(CursorBuildSpec.FULL_SCAN);
+             CursorHolder holder = asyncHolder.release()) {
+          rows.addAll(scanTenantRegion(holder));
+        }
       }
+      Assertions.assertEquals(
+          List.of(
+              List.of("acme", "us-east-1"),
+              List.of("acme", "us-west-2"),
+              List.of("globex", "eu-west-1")
+          ),
+          rows
+      );
+
+      final Set<String> downloaded = opened.mapper().getDownloadedFiles();
+      Assertions.assertTrue(downloaded.contains(ACME_BUNDLE + "/region"), "got: " + downloaded);
+      Assertions.assertTrue(downloaded.contains(GLOBEX_BUNDLE + "/region"), "got: " + downloaded);
     }
   }
 
@@ -255,35 +251,47 @@ class PartialQueryableIndexCursorFactoryClusteredTest extends PartialQueryableIn
     final CountingRangeReader rangeReader = new CountingRangeReader(segmentDir);
     try (IndexAndMapper opened = openIndex(rangeReader, "servable_acme")) {
       final PartialSegmentFileMapperV10 mapper = opened.mapper();
-      final PartialQueryableIndexCursorFactory factory = new PartialQueryableIndexCursorFactory(
+      final Segment segment = new PartialQueryableIndexSegment(
           opened.index(),
-          QueryableIndexTimeBoundaryInspector.create(opened.index()),
+          SegmentId.dummy("test"),
+          () -> {},
           noOpAcquirer(directExec()),
           ACME_BUNDLE::equals
       );
 
-      try (AsyncCursorHolder asyncHolder = factory.makeCursorHolderAsync(CursorBuildSpec.FULL_SCAN);
-           CursorHolder holder = asyncHolder.release()) {
-        // the unserved globex group is left out entirely, rather than nil-ed
-        Assertions.assertEquals(
-            List.of(List.of("acme", "us-east-1"), List.of("acme", "us-west-2")),
-            scanTenantRegion(holder)
-        );
-        final Set<String> downloaded = mapper.getDownloadedFiles();
-        Assertions.assertTrue(
-            downloaded.stream().noneMatch(f -> f.startsWith(GLOBEX_BUNDLE + "/")),
-            "unserved globex group must not be downloaded; got: " + downloaded
-        );
+      // the unserved globex group is left out entirely, rather than nil-ed
+      final List<AcquiredView> views = segment.as(SegmentViewFetcher.class).acquireViews(CursorBuildSpec.FULL_SCAN);
+      Assertions.assertEquals(1, views.size());
+      final List<List<String>> rows = new ArrayList<>();
+      for (AcquiredView view : views) {
+        try (AsyncCursorHolder asyncHolder =
+                 view.view().get().as(CursorFactory.class).makeCursorHolderAsync(CursorBuildSpec.FULL_SCAN);
+             CursorHolder holder = asyncHolder.release()) {
+          rows.addAll(scanTenantRegion(holder));
+        }
       }
+      Assertions.assertEquals(List.of(List.of("acme", "us-east-1"), List.of("acme", "us-west-2")), rows);
+      final Set<String> downloaded = mapper.getDownloadedFiles();
+      Assertions.assertTrue(
+          downloaded.stream().noneMatch(f -> f.startsWith(GLOBEX_BUNDLE + "/")),
+          "unserved globex group must not be downloaded; got: " + downloaded
+      );
+      views.forEach(view -> view.view().close());
 
       // sync path drops the unserved group too, even once it is resident
       mapper.fetchFiles(mapper.getSegmentFileMetadata().getFiles().keySet());
-      try (CursorHolder holder = factory.makeCursorHolder(CursorBuildSpec.FULL_SCAN)) {
-        Assertions.assertEquals(
-            List.of(List.of("acme", "us-east-1"), List.of("acme", "us-west-2")),
-            scanTenantRegion(holder)
-        );
+      final List<AcquiredView> residentViews =
+          segment.as(SegmentViewFetcher.class).acquireViews(CursorBuildSpec.FULL_SCAN);
+      Assertions.assertEquals(1, residentViews.size());
+      final List<List<String>> residentRows = new ArrayList<>();
+      for (AcquiredView view : residentViews) {
+        try (CursorHolder holder =
+                 view.view().get().as(CursorFactory.class).makeCursorHolder(CursorBuildSpec.FULL_SCAN)) {
+          residentRows.addAll(scanTenantRegion(holder));
+        }
       }
+      Assertions.assertEquals(List.of(List.of("acme", "us-east-1"), List.of("acme", "us-west-2")), residentRows);
+      residentViews.forEach(view -> view.view().close());
     }
   }
 
@@ -314,43 +322,43 @@ class PartialQueryableIndexCursorFactoryClusteredTest extends PartialQueryableIn
     final CountingRangeReader rangeReader = new CountingRangeReader(segmentDir);
     try (IndexAndMapper opened = openIndex(rangeReader, "sync_full")) {
       final PartialSegmentFileMapperV10 mapper = opened.mapper();
-      final PartialQueryableIndexCursorFactory factory = factory(opened.index());
+      final List<CursorFactory> groupFactories = groupFactories(opened.index(), noOpAcquirer(directExec()));
 
       // Sync path refuses until everything is resident.
       Assertions.assertThrows(
           DruidException.class,
-          () -> factory.makeCursorHolder(CursorBuildSpec.FULL_SCAN)
+          () -> groupFactories.get(0).makeCursorHolder(CursorBuildSpec.FULL_SCAN)
       );
 
       // Eager-acquire equivalent: materialize every internal file, then the sync clustered path works via the delegate.
       mapper.fetchFiles(mapper.getSegmentFileMetadata().getFiles().keySet());
       Assertions.assertTrue(mapper.isFullyDownloaded());
-      try (CursorHolder holder = factory.makeCursorHolder(CursorBuildSpec.FULL_SCAN)) {
-        Assertions.assertEquals(
-            List.of(
-                List.of("acme", "us-east-1"),
-                List.of("acme", "us-west-2"),
-                List.of("globex", "eu-west-1")
-            ),
-            scanTenantRegion(holder)
-        );
+      final List<List<String>> rows = new ArrayList<>();
+      for (CursorFactory groupFactory : groupFactories) {
+        try (CursorHolder holder = groupFactory.makeCursorHolder(CursorBuildSpec.FULL_SCAN)) {
+          rows.addAll(scanTenantRegion(holder));
+        }
       }
+      Assertions.assertEquals(
+          List.of(
+              List.of("acme", "us-east-1"),
+              List.of("acme", "us-west-2"),
+              List.of("globex", "eu-west-1")
+          ),
+          rows
+      );
     }
   }
 
   @Test
-  void testAsyncMultiGroupDefersDownloadUntilExecutorRuns() throws Exception
+  void testAsyncGroupsDeferDownloadUntilExecutorRuns() throws Exception
   {
     final CountingRangeReader rangeReader = new CountingRangeReader(segmentDir);
     final CountDownLatch gate = new CountDownLatch(1);
     final ExecutorService rawExec = Execs.singleThreaded("partial-clustered-defer-%d");
     final ListeningExecutorService gatedExec = MoreExecutors.listeningDecorator(rawExec);
     try (IndexAndMapper opened = openIndex(rangeReader, "async_defer")) {
-      final PartialQueryableIndexCursorFactory factory = new PartialQueryableIndexCursorFactory(
-          opened.index(),
-          QueryableIndexTimeBoundaryInspector.create(opened.index()),
-          noOpAcquirer(gatedExec)
-      );
+      final List<CursorFactory> groupFactories = groupFactories(opened.index(), noOpAcquirer(gatedExec));
       rangeReader.resetCount();
 
       // Block the download executor so no group download can start yet.
@@ -364,27 +372,36 @@ class PartialQueryableIndexCursorFactoryClusteredTest extends PartialQueryableIn
         }
       });
 
-      // FULL_SCAN survives both groups → both bundles must download before the holder is ready.
-      final AsyncCursorHolder asyncHolder = factory.makeCursorHolderAsync(CursorBuildSpec.FULL_SCAN);
-      Assertions.assertFalse(asyncHolder.isReady(), "must wait while the download executor is blocked");
+      // FULL_SCAN survives both groups → each group's bundle must download before its holder is ready.
+      final List<AsyncCursorHolder> asyncHolders = new ArrayList<>();
+      for (CursorFactory groupFactory : groupFactories) {
+        asyncHolders.add(groupFactory.makeCursorHolderAsync(CursorBuildSpec.FULL_SCAN));
+      }
+      final CountDownLatch ready = new CountDownLatch(asyncHolders.size());
+      for (AsyncCursorHolder asyncHolder : asyncHolders) {
+        Assertions.assertFalse(asyncHolder.isReady(), "must wait while the download executor is blocked");
+        asyncHolder.addReadyCallback(ready::countDown);
+      }
       Assertions.assertEquals(0, rangeReader.getReadCount(), "no group download should have started yet");
 
-      final CountDownLatch ready = new CountDownLatch(1);
-      asyncHolder.addReadyCallback(ready::countDown);
       gate.countDown();
-      Assertions.assertTrue(ready.await(15, TimeUnit.SECONDS), "ready callback must fire once downloads run");
-      Assertions.assertTrue(asyncHolder.isReady());
+      Assertions.assertTrue(ready.await(15, TimeUnit.SECONDS), "ready callbacks must fire once downloads run");
 
-      try (CursorHolder holder = asyncHolder.release()) {
-        Assertions.assertEquals(
-            List.of(
-                List.of("acme", "us-east-1"),
-                List.of("acme", "us-west-2"),
-                List.of("globex", "eu-west-1")
-            ),
-            scanTenantRegion(holder)
-        );
+      final List<List<String>> rows = new ArrayList<>();
+      for (AsyncCursorHolder asyncHolder : asyncHolders) {
+        Assertions.assertTrue(asyncHolder.isReady());
+        try (CursorHolder holder = asyncHolder.release()) {
+          rows.addAll(scanTenantRegion(holder));
+        }
       }
+      Assertions.assertEquals(
+          List.of(
+              List.of("acme", "us-east-1"),
+              List.of("acme", "us-west-2"),
+              List.of("globex", "eu-west-1")
+          ),
+          rows
+      );
     }
     finally {
       gatedExec.shutdownNow();
@@ -393,39 +410,38 @@ class PartialQueryableIndexCursorFactoryClusteredTest extends PartialQueryableIn
   }
 
   @Test
-  void testMultiGroupSuccessCloseReleasesEveryBundleHold() throws IOException
+  void testGroupSuccessCloseReleasesOnlyItsBundleHold() throws IOException
   {
     final CountingRangeReader rangeReader = new CountingRangeReader(segmentDir);
     final CountingBundleAcquirer acquirer = new CountingBundleAcquirer(directExec());
     try (IndexAndMapper opened = openIndex(rangeReader, "release_success")) {
-      final PartialQueryableIndexCursorFactory factory = new PartialQueryableIndexCursorFactory(
-          opened.index(),
-          QueryableIndexTimeBoundaryInspector.create(opened.index()),
-          acquirer
-      );
+      final List<CursorFactory> groupFactories = groupFactories(opened.index(), acquirer);
+      final List<String> bundles = List.of(ACME_BUNDLE, GLOBEX_BUNDLE);
 
-      // FULL_SCAN survives both groups → both bundles acquired during the build; with the direct executor the
-      // downloads run inline so the holder is immediately ready.
-      try (AsyncCursorHolder asyncHolder = factory.makeCursorHolderAsync(CursorBuildSpec.FULL_SCAN)) {
-        Assertions.assertTrue(asyncHolder.isReady());
-        Assertions.assertEquals(1, acquirer.acquiredCount(ACME_BUNDLE), "acme group bundle acquired");
-        Assertions.assertEquals(1, acquirer.acquiredCount(GLOBEX_BUNDLE), "globex group bundle acquired");
+      for (int i = 0; i < groupFactories.size(); i++) {
+        final String bundle = bundles.get(i);
+        final String otherBundle = bundles.get(1 - i);
 
-        final CursorHolder holder = asyncHolder.release();
-        // The produced holder owns every group's hold; nothing is released until it closes.
-        Assertions.assertEquals(0, acquirer.releasedCount(ACME_BUNDLE));
-        Assertions.assertEquals(0, acquirer.releasedCount(GLOBEX_BUNDLE));
+        // With the direct executor the download runs inline, so the holder is immediately ready. Each group acquires
+        // only its own bundle.
+        try (AsyncCursorHolder asyncHolder = groupFactories.get(i).makeCursorHolderAsync(CursorBuildSpec.FULL_SCAN)) {
+          Assertions.assertTrue(asyncHolder.isReady());
+          Assertions.assertEquals(1, acquirer.acquiredCount(bundle), bundle + " acquired");
+          Assertions.assertEquals(i == 0 ? 0 : 1, acquirer.acquiredCount(otherBundle), otherBundle + " acquired");
 
-        holder.close();
-        // Closing the holder fans out the release across all surviving groups' bundle holds.
-        Assertions.assertEquals(1, acquirer.releasedCount(ACME_BUNDLE), "acme hold released on holder close");
-        Assertions.assertEquals(1, acquirer.releasedCount(GLOBEX_BUNDLE), "globex hold released on holder close");
+          final CursorHolder holder = asyncHolder.release();
+          // The produced holder owns the group's hold; nothing is released until it closes.
+          Assertions.assertEquals(0, acquirer.releasedCount(bundle));
+
+          holder.close();
+          Assertions.assertEquals(1, acquirer.releasedCount(bundle), bundle + " hold released on holder close");
+        }
       }
     }
   }
 
   @Test
-  void testMultiGroupCancelBeforeReadyReleasesEveryBundleHold() throws Exception
+  void testGroupCancelBeforeReadyReleasesItsBundleHold() throws Exception
   {
     final CountingRangeReader rangeReader = new CountingRangeReader(segmentDir);
     final CountDownLatch gate = new CountDownLatch(1);
@@ -433,13 +449,9 @@ class PartialQueryableIndexCursorFactoryClusteredTest extends PartialQueryableIn
     final ListeningExecutorService gatedExec = MoreExecutors.listeningDecorator(rawExec);
     final CountingBundleAcquirer acquirer = new CountingBundleAcquirer(gatedExec);
     try (IndexAndMapper opened = openIndex(rangeReader, "release_cancel")) {
-      final PartialQueryableIndexCursorFactory factory = new PartialQueryableIndexCursorFactory(
-          opened.index(),
-          QueryableIndexTimeBoundaryInspector.create(opened.index()),
-          acquirer
-      );
+      final List<CursorFactory> groupFactories = groupFactories(opened.index(), acquirer);
 
-      // Block the download executor so the per-column download bodies stay queued and the holder never becomes ready.
+      // Block the download executor so the per-column download bodies stay queued and the holders never become ready.
       @SuppressWarnings("unused")
       ListenableFuture<?> unused = gatedExec.submit(() -> {
         try {
@@ -450,19 +462,196 @@ class PartialQueryableIndexCursorFactoryClusteredTest extends PartialQueryableIn
         }
       });
 
-      final AsyncCursorHolder asyncHolder = factory.makeCursorHolderAsync(CursorBuildSpec.FULL_SCAN);
-      // Both surviving groups' bundles are acquired synchronously during the build, before any download runs.
+      final List<AsyncCursorHolder> asyncHolders = new ArrayList<>();
+      for (CursorFactory groupFactory : groupFactories) {
+        asyncHolders.add(groupFactory.makeCursorHolderAsync(CursorBuildSpec.FULL_SCAN));
+      }
+      // Each group's bundle is acquired synchronously during its build, before any download runs.
       Assertions.assertEquals(1, acquirer.acquiredCount(ACME_BUNDLE), "acme group bundle acquired");
       Assertions.assertEquals(1, acquirer.acquiredCount(GLOBEX_BUNDLE), "globex group bundle acquired");
-      Assertions.assertFalse(asyncHolder.isReady(), "must wait while the download executor is blocked");
-      Assertions.assertEquals(0, acquirer.releasedCount(ACME_BUNDLE));
-      Assertions.assertEquals(0, acquirer.releasedCount(GLOBEX_BUNDLE));
+      for (AsyncCursorHolder asyncHolder : asyncHolders) {
+        Assertions.assertFalse(asyncHolder.isReady(), "must wait while the download executor is blocked");
+      }
 
-      // Cancel before the holder is ready (query cancel/timeout). No download body has run, so the per-bundle
-      // handshake releases each hold immediately, and the canceler must fan the release out across every group.
-      asyncHolder.close();
+      // Cancel before the holders are ready (query cancel/timeout). No download body has run, so the per-bundle
+      // handshake releases each hold immediately.
+      asyncHolders.get(0).close();
       Assertions.assertEquals(1, acquirer.releasedCount(ACME_BUNDLE), "acme hold released on cancel");
+      Assertions.assertEquals(0, acquirer.releasedCount(GLOBEX_BUNDLE), "globex hold still held");
+      asyncHolders.get(1).close();
       Assertions.assertEquals(1, acquirer.releasedCount(GLOBEX_BUNDLE), "globex hold released on cancel");
+    }
+    finally {
+      gate.countDown();
+      gatedExec.shutdownNow();
+      rawExec.shutdownNow();
+    }
+  }
+
+  @Test
+  void testViewsDownloadTheirOwnColumnsAndHoldTheirBundles() throws IOException
+  {
+    final CountingRangeReader rangeReader = new CountingRangeReader(segmentDir);
+    final CountingBundleAcquirer acquirer = new CountingBundleAcquirer(directExec());
+    try (IndexAndMapper opened = openIndex(rangeReader, "views_globex")) {
+      final Segment segment =
+          new PartialQueryableIndexSegment(opened.index(), SegmentId.dummy("test"), () -> {}, acquirer);
+      final CursorBuildSpec spec =
+          CursorBuildSpec.builder()
+                         .setFilter(new EqualityFilter("tenant", ColumnType.STRING, "globex", null))
+                         .build();
+
+      // The filter rules out the acme group, which has nothing to download. The globex group downloads its columns
+      // while its view is acquired.
+      final List<AcquiredView> views = segment.as(SegmentViewFetcher.class).acquireViews(spec);
+      Assertions.assertEquals(1, views.size());
+      Assertions.assertTrue(views.get(0).fetchedBytes() > 0);
+      Assertions.assertTrue(views.get(0).view().isReady());
+      Assertions.assertEquals(0, acquirer.acquiredCount(ACME_BUNDLE));
+      Assertions.assertEquals(1, acquirer.acquiredCount(GLOBEX_BUNDLE));
+      final Set<String> downloaded = opened.mapper().getDownloadedFiles();
+      Assertions.assertTrue(downloaded.contains(GLOBEX_BUNDLE + "/region"), "got: " + downloaded);
+      Assertions.assertTrue(downloaded.stream().noneMatch(f -> f.startsWith(ACME_BUNDLE + "/")), "got: " + downloaded);
+
+      // Each view reads its own group.
+      final List<List<String>> rows = new ArrayList<>();
+      for (AcquiredView view : views) {
+        try (AsyncCursorHolder asyncHolder = view.view().get().as(CursorFactory.class).makeCursorHolderAsync(spec);
+             CursorHolder holder = asyncHolder.release()) {
+          rows.addAll(scanTenantRegion(holder));
+        }
+      }
+      Assertions.assertEquals(List.of(List.of("globex", "eu-west-1")), rows);
+
+      // The cursor holder released its own hold; closing the views releases theirs.
+      Assertions.assertEquals(acquirer.acquiredCount(GLOBEX_BUNDLE) - 1, acquirer.releasedCount(GLOBEX_BUNDLE));
+      views.forEach(view -> view.view().close());
+      Assertions.assertEquals(acquirer.acquiredCount(GLOBEX_BUNDLE), acquirer.releasedCount(GLOBEX_BUNDLE));
+    }
+  }
+
+  @Test
+  void testViewsOfFullyDownloadedSegmentAreResidentAndHoldTheirBundles() throws IOException
+  {
+    final CountingRangeReader rangeReader = new CountingRangeReader(segmentDir);
+    final CountingBundleAcquirer acquirer = new CountingBundleAcquirer(directExec());
+    try (IndexAndMapper opened = openIndex(rangeReader, "views_resident")) {
+      final PartialSegmentFileMapperV10 mapper = opened.mapper();
+      mapper.fetchFiles(mapper.getSegmentFileMetadata().getFiles().keySet());
+      rangeReader.resetCount();
+      final Segment segment =
+          new PartialQueryableIndexSegment(opened.index(), SegmentId.dummy("test"), () -> {}, acquirer);
+
+      // The segment is fully downloaded, so the views are resident right away, with nothing to download. Each holds
+      // its group's bundle, so the bundle stays on disk while the view is in use.
+      final List<AcquiredView> views = segment.as(SegmentViewFetcher.class).acquireViews(CursorBuildSpec.FULL_SCAN);
+      Assertions.assertEquals(2, views.size());
+      for (AcquiredView view : views) {
+        Assertions.assertTrue(view.view().isReady());
+        Assertions.assertEquals(0, view.fetchedBytes());
+      }
+      Assertions.assertEquals(1, acquirer.acquiredCount(ACME_BUNDLE));
+      Assertions.assertEquals(1, acquirer.acquiredCount(GLOBEX_BUNDLE));
+
+      final List<List<String>> rows = new ArrayList<>();
+      for (AcquiredView view : views) {
+        final CursorFactory viewFactory = view.view().get().as(CursorFactory.class);
+        try (CursorHolder holder = viewFactory.makeCursorHolder(CursorBuildSpec.FULL_SCAN)) {
+          rows.addAll(scanTenantRegion(holder));
+        }
+      }
+      Assertions.assertEquals(
+          List.of(
+              List.of("acme", "us-east-1"),
+              List.of("acme", "us-west-2"),
+              List.of("globex", "eu-west-1")
+          ),
+          rows
+      );
+      Assertions.assertEquals(0, rangeReader.getReadCount());
+
+      Assertions.assertEquals(0, acquirer.releasedCount(ACME_BUNDLE));
+      views.forEach(view -> view.view().close());
+      Assertions.assertEquals(1, acquirer.releasedCount(ACME_BUNDLE));
+      Assertions.assertEquals(1, acquirer.releasedCount(GLOBEX_BUNDLE));
+    }
+  }
+
+  @Test
+  void testClosingViewBeforeReadyReleasesItsBundleHold() throws Exception
+  {
+    final CountingRangeReader rangeReader = new CountingRangeReader(segmentDir);
+    final CountDownLatch gate = new CountDownLatch(1);
+    final ExecutorService rawExec = Execs.singleThreaded("partial-clustered-view-cancel-%d");
+    final ListeningExecutorService gatedExec = MoreExecutors.listeningDecorator(rawExec);
+    final CountingBundleAcquirer acquirer = new CountingBundleAcquirer(gatedExec);
+    try (IndexAndMapper opened = openIndex(rangeReader, "views_cancel")) {
+      final Segment segment =
+          new PartialQueryableIndexSegment(opened.index(), SegmentId.dummy("test"), () -> {}, acquirer);
+
+      // Block the download executor so the views never become resident.
+      @SuppressWarnings("unused")
+      ListenableFuture<?> unused = gatedExec.submit(() -> {
+        try {
+          gate.await();
+        }
+        catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      });
+
+      final List<AcquiredView> views = segment.as(SegmentViewFetcher.class).acquireViews(CursorBuildSpec.FULL_SCAN);
+      Assertions.assertEquals(2, views.size());
+      Assertions.assertEquals(1, acquirer.acquiredCount(ACME_BUNDLE), "acme group bundle acquired");
+      Assertions.assertEquals(1, acquirer.acquiredCount(GLOBEX_BUNDLE), "globex group bundle acquired");
+      for (AcquiredView view : views) {
+        Assertions.assertFalse(view.view().isReady(), "must wait while the download executor is blocked");
+      }
+
+      // No download has run, so closing a view releases its hold immediately.
+      views.get(0).view().close();
+      Assertions.assertEquals(1, acquirer.releasedCount(ACME_BUNDLE), "acme hold released on close");
+      Assertions.assertEquals(0, acquirer.releasedCount(GLOBEX_BUNDLE), "globex hold still held");
+      views.get(1).view().close();
+      Assertions.assertEquals(1, acquirer.releasedCount(GLOBEX_BUNDLE), "globex hold released on close");
+    }
+    finally {
+      gate.countDown();
+      gatedExec.shutdownNow();
+      rawExec.shutdownNow();
+    }
+  }
+
+  @Test
+  void testSplitRefusesSegmentThatIsNotFullyDownloaded() throws Exception
+  {
+    final CountingRangeReader rangeReader = new CountingRangeReader(segmentDir);
+    final CountDownLatch gate = new CountDownLatch(1);
+    final ExecutorService rawExec = Execs.singleThreaded("partial-clustered-split-%d");
+    final ListeningExecutorService gatedExec = MoreExecutors.listeningDecorator(rawExec);
+    final CountingBundleAcquirer acquirer = new CountingBundleAcquirer(gatedExec);
+    try (IndexAndMapper opened = openIndex(rangeReader, "split_not_downloaded")) {
+      final Segment segment =
+          new PartialQueryableIndexSegment(opened.index(), SegmentId.dummy("test"), () -> {}, acquirer);
+
+      // Block the download executor so the views never become resident.
+      @SuppressWarnings("unused")
+      ListenableFuture<?> unused = gatedExec.submit(() -> {
+        try {
+          gate.await();
+        }
+        catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      });
+
+      final DruidException e = Assertions.assertThrows(
+          DruidException.class,
+          () -> SplitSegment.mapFunction(SegmentMapFunction.IDENTITY, null).apply(Optional.of(segment))
+      );
+      Assertions.assertTrue(e.getMessage().contains("not fully downloaded"), e.getMessage());
+      Assertions.assertEquals(1, acquirer.releasedCount(ACME_BUNDLE), "acme hold released");
+      Assertions.assertEquals(1, acquirer.releasedCount(GLOBEX_BUNDLE), "globex hold released");
     }
     finally {
       gate.countDown();
@@ -524,23 +713,39 @@ class PartialQueryableIndexCursorFactoryClusteredTest extends PartialQueryableIn
   }
 
   @Test
-  void testCursorCapabilitiesCombineAllGroups() throws IOException
+  void testCursorCapabilitiesAreThoseOfEachGroup() throws IOException
   {
-    // a cursor over several groups must answer for all of them, not just the group it is reading
+    // Each group's cursor answers for its own group: tags is multi-valued only in globex, and num is LONG in acme and
+    // initech but DOUBLE in globex.
     final CountingRangeReader rangeReader = new CountingRangeReader(mixedSegmentDir);
     try (IndexAndMapper opened = openIndex(rangeReader, "mixed_cursor_capabilities")) {
-      final PartialQueryableIndexCursorFactory factory = factory(opened.index());
-      try (AsyncCursorHolder asyncHolder = factory.makeCursorHolderAsync(CursorBuildSpec.FULL_SCAN);
-           CursorHolder holder = asyncHolder.release()) {
-        final ColumnSelectorFactory selectorFactory = holder.asCursor().getColumnSelectorFactory();
-        Assertions.assertTrue(selectorFactory.getColumnCapabilities("tags").hasMultipleValues().isTrue());
-        Assertions.assertEquals(ColumnType.DOUBLE, selectorFactory.getColumnCapabilities("num").toColumnType());
-        // descriptors don't record nulls, so the cursor must not claim there are none
-        Assertions.assertTrue(selectorFactory.getColumnCapabilities("num").hasNulls().isMaybeTrue());
-        Assertions.assertTrue(
-            selectorFactory.getColumnCapabilities(ColumnHolder.TIME_COLUMN_NAME).hasNulls().isFalse()
-        );
+      final List<CursorFactory> groupFactories = groupFactories(opened.index(), noOpAcquirer(directExec()));
+      Assertions.assertEquals(3, groupFactories.size());
+      for (int i = 0; i < groupFactories.size(); i++) {
+        try (AsyncCursorHolder asyncHolder = groupFactories.get(i).makeCursorHolderAsync(CursorBuildSpec.FULL_SCAN);
+             CursorHolder holder = asyncHolder.release()) {
+          final ColumnSelectorFactory selectorFactory = holder.asCursor().getColumnSelectorFactory();
+          Assertions.assertEquals(i == 1, selectorFactory.getColumnCapabilities("tags").hasMultipleValues().isTrue());
+          Assertions.assertEquals(
+              i == 1 ? ColumnType.DOUBLE : ColumnType.LONG,
+              selectorFactory.getColumnCapabilities("num").toColumnType()
+          );
+          Assertions.assertTrue(
+              selectorFactory.getColumnCapabilities(ColumnHolder.TIME_COLUMN_NAME).hasNulls().isFalse()
+          );
+        }
       }
+
+      // Factory-level capabilities come from metadata, and are each group's own, since the segment has no projections
+      // for the first group to serve. Descriptors don't record nulls, so they must not claim there are none.
+      final ColumnCapabilities firstGroupNum = groupFactories.get(0).getColumnCapabilities("num");
+      Assertions.assertEquals(ColumnType.LONG, firstGroupNum.toColumnType());
+      Assertions.assertTrue(firstGroupNum.hasNulls().isMaybeTrue());
+      Assertions.assertTrue(groupFactories.get(0).getColumnCapabilities("tags").hasMultipleValues().isFalse());
+      Assertions.assertEquals(ColumnType.DOUBLE, groupFactories.get(1).getColumnCapabilities("num").toColumnType());
+      Assertions.assertTrue(groupFactories.get(1).getColumnCapabilities("tags").hasMultipleValues().isTrue());
+      Assertions.assertEquals(ColumnType.LONG, groupFactories.get(2).getColumnCapabilities("num").toColumnType());
+      Assertions.assertTrue(groupFactories.get(2).getColumnCapabilities("tags").hasMultipleValues().isFalse());
     }
   }
 
@@ -573,6 +778,26 @@ class PartialQueryableIndexCursorFactoryClusteredTest extends PartialQueryableIn
           + opened.mapper().getDownloadedFiles()
       );
     }
+  }
+
+  /**
+   * Returns the cursor factories of each cluster group of {@code index}, in clustering order, as used by the views of
+   * {@link PartialQueryableIndexSegment}. Callers read clustered segments one group at a time, since a cursor cannot
+   * span groups. Each factory downloads its own group's columns when it builds a cursor holder.
+   */
+  private static List<CursorFactory> groupFactories(PartialQueryableIndex index, PartialBundleAcquirer acquirer)
+  {
+    final TimeBoundaryInspector timeBoundaryInspector = QueryableIndexTimeBoundaryInspector.create(index);
+    final PartialQueryableIndexCursorFactory factory =
+        new PartialQueryableIndexCursorFactory(index, timeBoundaryInspector, acquirer);
+    final List<CursorFactory> factories = new ArrayList<>();
+    for (ClusterGroupView clusterGroup : ClusterGroupView.forAllGroups(
+        index.getClusterGroupSchemas(),
+        ClusterGroupView.hasProjections(index.getMetadata())
+    )) {
+      factories.add(factory.makeClusterGroupFactory(timeBoundaryInspector, clusterGroup));
+    }
+    return factories;
   }
 
   private PartialQueryableIndexCursorFactory factory(PartialQueryableIndex index)

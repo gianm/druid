@@ -41,6 +41,7 @@ import org.apache.druid.query.BySegmentQueryRunner;
 import org.apache.druid.query.CPUTimeMetricQueryRunner;
 import org.apache.druid.query.DataSegmentAndDescriptor;
 import org.apache.druid.query.DataSource;
+import org.apache.druid.query.DirectQueryProcessingPool;
 import org.apache.druid.query.FinalizeResultsQueryRunner;
 import org.apache.druid.query.LeafSegmentsBundle;
 import org.apache.druid.query.MetricsEmittingQueryRunner;
@@ -59,6 +60,7 @@ import org.apache.druid.query.QuerySegmentWalker;
 import org.apache.druid.query.QueryToolChest;
 import org.apache.druid.query.QueryUnsupportedException;
 import org.apache.druid.query.SegmentDescriptor;
+import org.apache.druid.query.SinkQueryRunners;
 import org.apache.druid.query.context.ResponseContext;
 import org.apache.druid.query.metadata.metadata.SegmentMetadataQuery;
 import org.apache.druid.query.planning.ExecutionVertex;
@@ -69,6 +71,7 @@ import org.apache.druid.query.spec.SpecificSegmentSpec;
 import org.apache.druid.segment.Segment;
 import org.apache.druid.segment.SegmentMapFunction;
 import org.apache.druid.segment.SegmentReference;
+import org.apache.druid.segment.SplitSegment;
 import org.apache.druid.segment.TimeBoundaryInspector;
 import org.apache.druid.segment.loading.AcquireMode;
 import org.apache.druid.segment.loading.AcquireSegmentAction;
@@ -91,6 +94,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.UnaryOperator;
 
 /**
  * Query handler for Historical processes (see CliHistorical).
@@ -415,13 +419,15 @@ public class ServerManager implements QuerySegmentWalker
   }
 
   /**
-   * Returns one runner per spec, in the order of {@code specs}. The ordering is important because
-   * {@link QueryRunnerFactory} implementations may rely on it. For example,
-   * {@link ScanQueryRunnerFactory#mergeRunners} matches runners to segment descriptors positionally.
+   * Builds the runners for {@code specs}, in the order of {@code specs}, with one runner per cluster group for segments
+   * split by {@link SplitSegment#mapFunction}. Each runner is paired with its {@link SegmentDescriptor}'s interval and
+   * keyed by the descriptor, so mergers like {@link ScanQueryRunnerFactory} can place each group's runner with its
+   * segment.
    *
    * <p>The order of {@code segmentReferences} need not match the order of {@code specs}.
    */
-  private <T> FunctionalIterable<QueryRunner<T>> getQueryRunnersForSegments(
+  private <T> SinkQueryRunners<T> getQueryRunnersForSegments(
+      final Query<T> query,
       final List<SegmentDescriptor> specs,
       final List<SegmentReference> segmentReferences,
       final QueryRunnerFactory<T, Query<T>> factory,
@@ -435,31 +441,42 @@ public class ServerManager implements QuerySegmentWalker
       referencesByDescriptor.put(reference.getSegmentDescriptor(), reference);
     }
 
-    return FunctionalIterable
-        .create(specs)
-        .transform(
-            spec -> {
-              final SegmentReference ref = referencesByDescriptor.get(spec);
-              if (ref == null) {
-                // Return nothing: ResourceManagingQueryRunner already reported this spec as missing.
-                return new NoopQueryRunner<>();
-              }
+    final List<SinkQueryRunners.PartitionRunner<T>> runners = new ArrayList<>(specs.size());
+    for (final SegmentDescriptor spec : specs) {
+      final SegmentReference ref = referencesByDescriptor.get(spec);
+      if (ref == null) {
+        // Skip: ResourceManagingQueryRunner already reported this spec as missing.
+        continue;
+      }
 
-              return ref.getSegmentReference()
-                        .map(segment ->
-                                 buildQueryRunnerForSegment(
-                                     ref.getSegmentDescriptor(),
-                                     segment,
-                                     factory,
-                                     toolChest,
-                                     cpuTimeAccumulator,
-                                     cacheKeyPrefix
-                                 )
-                        ).orElseThrow(
-                            () -> DruidException.defensive("Unexpected missing segment[%s]", ref.getSegmentDescriptor())
-                        );
-            }
+      final SegmentDescriptor descriptor = ref.getSegmentDescriptor();
+      final Segment segment = ref.getSegmentReference().orElseThrow(
+          () -> DruidException.defensive("Unexpected missing segment[%s]", descriptor)
+      );
+
+      if (segment instanceof SplitSegment splitSegment && !splitSegment.isTombstone()) {
+        for (final QueryRunner<T> runner : buildQueryRunnersForSplitSegment(
+            query,
+            descriptor,
+            splitSegment,
+            factory,
+            toolChest,
+            cpuTimeAccumulator,
+            cacheKeyPrefix
+        )) {
+          runners.add(new SinkQueryRunners.PartitionRunner<>(descriptor.getInterval(), descriptor, runner));
+        }
+      } else {
+        runners.add(
+            new SinkQueryRunners.PartitionRunner<>(
+                descriptor.getInterval(),
+                descriptor,
+                buildQueryRunnerForSegment(descriptor, segment, factory, toolChest, cpuTimeAccumulator, cacheKeyPrefix)
+            )
         );
+      }
+    }
+    return SinkQueryRunners.fromPartitionRunners(runners);
   }
 
   protected <T> QueryRunner<T> buildQueryRunnerForSegment(
@@ -476,11 +493,90 @@ public class ServerManager implements QuerySegmentWalker
     }
 
     final SegmentId segmentId = segment.getId();
-    final Interval segmentInterval = segment.getDataInterval();
-    final String segmentIdString = segmentId.toString();
+    final QueryRunner<T> runner = makeMeteredQueryRunner(
+        segmentDescriptor,
+        segment,
+        segmentId.toString(),
+        factory,
+        toolChest,
+        cacheKeyPrefix,
+        baseRunner -> new BySegmentQueryRunner<>(segmentId, segment.getDataInterval().getStart(), baseRunner)
+    );
+    return decorateQueryRunnerForSegment(segmentDescriptor, runner, toolChest, cpuTimeAccumulator);
+  }
 
-    final SpecificSegmentSpec segmentSpec = new SpecificSegmentSpec(segmentDescriptor);
-    final MetricsEmittingQueryRunner<T> metricsEmittingQueryRunnerInner = new MetricsEmittingQueryRunner<>(
+  /**
+   * Builds the runners for a segment that was split into cluster groups by {@link SplitSegment#mapFunction}. Each group
+   * is processed as if it were a separate segment, with its own runner, metrics, and cache entry (if
+   * {@link SplitSegment#isClusterGroupCacheable()}), like the hydrants of a realtime segment. For "bySegment" queries,
+   * the groups' runners are merged into a single runner, since the segment must produce a single result.
+   */
+  protected <T> List<QueryRunner<T>> buildQueryRunnersForSplitSegment(
+      final Query<T> query,
+      final SegmentDescriptor segmentDescriptor,
+      final SplitSegment segment,
+      final QueryRunnerFactory<T, Query<T>> factory,
+      final QueryToolChest<T, Query<T>> toolChest,
+      final AtomicLong cpuTimeAccumulator,
+      final Optional<byte[]> cacheKeyPrefix
+  )
+  {
+    final SegmentId segmentId = segment.getId();
+    final List<SinkQueryRunners.PartitionRunner<T>> groupRunners = new ArrayList<>();
+    for (final SplitSegment.MappedClusterGroup clusterGroup : segment.getClusterGroups()) {
+      final QueryRunner<T> groupRunner = makeMeteredQueryRunner(
+          segmentDescriptor,
+          clusterGroup.segment(),
+          segment.isClusterGroupCacheable()
+          ? SplitSegment.makeClusterGroupCacheIdentifier(segmentId.toString(), clusterGroup.groupNumber())
+          : null,
+          factory,
+          toolChest,
+          cacheKeyPrefix,
+          UnaryOperator.identity()
+      );
+      groupRunners.add(
+          new SinkQueryRunners.PartitionRunner<>(segmentDescriptor.getInterval(), segmentDescriptor, groupRunner)
+      );
+    }
+
+    if (query.context().isBySegment()) {
+      final BySegmentQueryRunner<T> bySegmentQueryRunner = new BySegmentQueryRunner<>(
+          segmentId,
+          segment.getDataInterval().getStart(),
+          factory.mergeRunners(DirectQueryProcessingPool.INSTANCE, SinkQueryRunners.fromPartitionRunners(groupRunners))
+      );
+      return List.of(
+          decorateQueryRunnerForSegment(segmentDescriptor, bySegmentQueryRunner, toolChest, cpuTimeAccumulator)
+      );
+    }
+
+    final List<QueryRunner<T>> runners = new ArrayList<>(groupRunners.size());
+    for (final SinkQueryRunners.PartitionRunner<T> groupRunner : groupRunners) {
+      runners.add(
+          decorateQueryRunnerForSegment(segmentDescriptor, groupRunner.runner(), toolChest, cpuTimeAccumulator)
+      );
+    }
+    return runners;
+  }
+
+  /**
+   * Returns a runner for {@code segment} that emits {@code query/segment/time}, {@code query/segmentAndCache/time},
+   * and {@code query/wait/time}, and uses the cache under {@code cacheId}, unless it is null. {@code wrapFn} wraps the
+   * runner inside the {@code query/segmentAndCache/time} measurement.
+   */
+  private <T> QueryRunner<T> makeMeteredQueryRunner(
+      final SegmentDescriptor segmentDescriptor,
+      final Segment segment,
+      @Nullable final String cacheId,
+      final QueryRunnerFactory<T, Query<T>> factory,
+      final QueryToolChest<T, Query<T>> toolChest,
+      final Optional<byte[]> cacheKeyPrefix,
+      final UnaryOperator<QueryRunner<T>> wrapFn
+  )
+  {
+    final String segmentIdString = segment.getId().toString();
+    QueryRunner<T> runner = new MetricsEmittingQueryRunner<>(
         emitter,
         toolChest,
         factory.createRunner(segment),
@@ -488,40 +584,60 @@ public class ServerManager implements QuerySegmentWalker
         queryMetrics -> queryMetrics.segment(segmentIdString)
     );
 
+    if (cacheId != null) {
+      runner = makeCachingQueryRunner(cacheId, segmentDescriptor, segment, toolChest, runner, cacheKeyPrefix);
+    }
+
+    return new MetricsEmittingQueryRunner<>(
+        emitter,
+        toolChest,
+        wrapFn.apply(runner),
+        QueryMetrics::reportSegmentAndCacheTime,
+        queryMetrics -> queryMetrics.segment(segmentIdString)
+    ).withWaitMeasuredFromNow();
+  }
+
+  private <T> CachingQueryRunner<T> makeCachingQueryRunner(
+      final String cacheId,
+      final SegmentDescriptor segmentDescriptor,
+      final Segment segment,
+      final QueryToolChest<T, Query<T>> toolChest,
+      final QueryRunner<T> baseRunner,
+      final Optional<byte[]> cacheKeyPrefix
+  )
+  {
     final TimeBoundaryInspector timeBoundaryInspector = segment.as(TimeBoundaryInspector.class);
     final Interval cacheKeyInterval = timeBoundaryInspector != null
                                       ? timeBoundaryInspector.getMinMaxInterval()
-                                      : segmentInterval;
-    final CachingQueryRunner<T> cachingQueryRunner = new CachingQueryRunner<>(
-        segmentIdString,
+                                      : segment.getDataInterval();
+    return new CachingQueryRunner<>(
+        cacheId,
         cacheKeyPrefix,
         segmentDescriptor,
         cacheKeyInterval,
         objectMapper,
         cache,
         toolChest,
-        metricsEmittingQueryRunnerInner,
+        baseRunner,
         cachePopulator,
         cacheConfig
     );
+  }
 
-    final BySegmentQueryRunner<T> bySegmentQueryRunner = new BySegmentQueryRunner<>(
-        segmentId,
-        segmentInterval.getStart(),
-        cachingQueryRunner
-    );
-
-    final MetricsEmittingQueryRunner<T> metricsEmittingQueryRunnerOuter = new MetricsEmittingQueryRunner<>(
-        emitter,
-        toolChest,
-        bySegmentQueryRunner,
-        QueryMetrics::reportSegmentAndCacheTime,
-        queryMetrics -> queryMetrics.segment(segmentIdString)
-    ).withWaitMeasuredFromNow();
-
+  /**
+   * Wraps {@code baseRunner}, which processes the segment described by {@code segmentDescriptor} (or one of its cluster
+   * groups), with the decorations that every per-segment runner gets.
+   */
+  private <T> QueryRunner<T> decorateQueryRunnerForSegment(
+      final SegmentDescriptor segmentDescriptor,
+      final QueryRunner<T> baseRunner,
+      final QueryToolChest<T, Query<T>> toolChest,
+      final AtomicLong cpuTimeAccumulator
+  )
+  {
     final SpecificSegmentQueryRunner<T> specificSegmentQueryRunner = new SpecificSegmentQueryRunner<>(
-        metricsEmittingQueryRunnerOuter,
-        segmentSpec
+        baseRunner,
+        new SpecificSegmentSpec(segmentDescriptor)
     );
 
     final PerSegmentOptimizingQueryRunner<T> perSegmentOptimizingQueryRunner = new PerSegmentOptimizingQueryRunner<>(
@@ -607,9 +723,10 @@ public class ServerManager implements QuerySegmentWalker
       ).withQueryMetrics(toolChest);
       final Query<T> query = queryPlus.getQuery();
       final AtomicLong cpuTimeAccumulator = new AtomicLong(0L);
+      // Split clustered segments into cluster groups, so each group can be processed as a separate segment.
       final SegmentMapFunction segmentMapFn = JvmUtils.safeAccumulateThreadCpuTime(
           cpuTimeAccumulator,
-          () -> ev.createSegmentMapFunction(policyEnforcer)
+          () -> SplitSegment.mapFunction(ev.createSegmentMapFunction(policyEnforcer), ev.getSegmentPruner())
       );
 
       // We compute the datasource's cache key here itself so it doesn't need to be re-computed for every segment
@@ -630,7 +747,8 @@ public class ServerManager implements QuerySegmentWalker
         closer.registerAll(segmentReferences);
         queryPlus.getQueryMetrics().reportQueriedSegmentCount(segmentReferences.size()).emit(emitter);
 
-        final FunctionalIterable<QueryRunner<T>> queryRunners = getQueryRunnersForSegments(
+        final SinkQueryRunners<T> queryRunners = getQueryRunnersForSegments(
+            query,
             specs,
             segmentReferences,
             factory,

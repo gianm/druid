@@ -35,10 +35,12 @@ import org.apache.druid.query.aggregation.AggregatorFactory;
 import org.apache.druid.query.aggregation.CountAggregatorFactory;
 import org.apache.druid.query.aggregation.LongSumAggregatorFactory;
 import org.apache.druid.query.dimension.DefaultDimensionSpec;
+import org.apache.druid.query.filter.EqualityFilter;
 import org.apache.druid.query.groupby.GroupByQuery;
 import org.apache.druid.query.groupby.GroupingEngine;
 import org.apache.druid.query.groupby.orderby.OrderByColumnSpec.Direction;
 import org.apache.druid.segment.column.ColumnHolder;
+import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.data.IndexedInts;
 import org.apache.druid.segment.incremental.IncrementalIndexSchema;
 import org.apache.druid.segment.projections.ClusteredValueGroupsBaseTableSchema;
@@ -46,6 +48,7 @@ import org.apache.druid.segment.projections.TableClusterGroupSpec;
 import org.apache.druid.segment.writeout.OffHeapMemorySegmentWriteOutMediumFactory;
 import org.apache.druid.testing.InitializedNullHandlingTest;
 import org.apache.druid.timeline.ClusterGroupTuples;
+import org.apache.druid.timeline.SegmentId;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -58,6 +61,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * End-to-end write-side coverage for clustered base-table segments: ingest into a clustered
@@ -117,27 +121,27 @@ class IndexMergerV10ClusteredTest extends InitializedNullHandlingTest
   }
 
   /**
-   * Walk all (tenant, region) pairs out of the clustered segment via the real cursor path (cluster-group
-   * concatenation + injected clustering constants).
+   * Walk all (tenant, region) pairs out of the clustered segment via the real cursor path (one cursor per cluster
+   * group, in clustering order, with injected clustering constants).
    */
   private static List<List<String>> scanTenantRegion(QueryableIndex index)
   {
-    final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
-        index,
-        QueryableIndexTimeBoundaryInspector.create(index)
-    );
     final List<List<String>> out = new ArrayList<>();
-    try (CursorHolder holder = factory.makeCursorHolder(CursorBuildSpec.FULL_SCAN)) {
-      final Cursor cursor = holder.asCursor();
-      final DimensionSelector tenantSel =
-          cursor.getColumnSelectorFactory().makeDimensionSelector(DefaultDimensionSpec.of("tenant"));
-      final DimensionSelector regionSel =
-          cursor.getColumnSelectorFactory().makeDimensionSelector(DefaultDimensionSpec.of("region"));
-      while (!cursor.isDone()) {
-        final String tenant = tenantSel.getRow().size() == 0 ? null : tenantSel.lookupName(tenantSel.getRow().get(0));
-        final String region = regionSel.getRow().size() == 0 ? null : regionSel.lookupName(regionSel.getRow().get(0));
-        out.add(Arrays.asList(tenant, region));
-        cursor.advance();
+    for (CursorFactory factory : SegmentViewTestUtil.viewCursorFactories(index)) {
+      try (CursorHolder holder = factory.makeCursorHolder(CursorBuildSpec.FULL_SCAN)) {
+        final Cursor cursor = holder.asCursor();
+        final DimensionSelector tenantSel =
+            cursor.getColumnSelectorFactory().makeDimensionSelector(DefaultDimensionSpec.of("tenant"));
+        final DimensionSelector regionSel =
+            cursor.getColumnSelectorFactory().makeDimensionSelector(DefaultDimensionSpec.of("region"));
+        while (!cursor.isDone()) {
+          final String tenant =
+              tenantSel.getRow().size() == 0 ? null : tenantSel.lookupName(tenantSel.getRow().get(0));
+          final String region =
+              regionSel.getRow().size() == 0 ? null : regionSel.lookupName(regionSel.getRow().get(0));
+          out.add(Arrays.asList(tenant, region));
+          cursor.advance();
+        }
       }
     }
     return out;
@@ -153,23 +157,21 @@ class IndexMergerV10ClusteredTest extends InitializedNullHandlingTest
    */
   private static List<List<String>> scanTags(QueryableIndex index)
   {
-    final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
-        index,
-        QueryableIndexTimeBoundaryInspector.create(index)
-    );
     final List<List<String>> out = new ArrayList<>();
-    try (CursorHolder holder = factory.makeCursorHolder(CursorBuildSpec.FULL_SCAN)) {
-      final Cursor cursor = holder.asCursor();
-      final DimensionSelector tagsSel =
-          cursor.getColumnSelectorFactory().makeDimensionSelector(DefaultDimensionSpec.of("tags"));
-      while (!cursor.isDone()) {
-        final IndexedInts row = tagsSel.getRow();
-        final List<String> values = new ArrayList<>(row.size());
-        for (int i = 0; i < row.size(); i++) {
-          values.add(tagsSel.lookupName(row.get(i)));
+    for (CursorFactory factory : SegmentViewTestUtil.viewCursorFactories(index)) {
+      try (CursorHolder holder = factory.makeCursorHolder(CursorBuildSpec.FULL_SCAN)) {
+        final Cursor cursor = holder.asCursor();
+        final DimensionSelector tagsSel =
+            cursor.getColumnSelectorFactory().makeDimensionSelector(DefaultDimensionSpec.of("tags"));
+        while (!cursor.isDone()) {
+          final IndexedInts row = tagsSel.getRow();
+          final List<String> values = new ArrayList<>(row.size());
+          for (int i = 0; i < row.size(); i++) {
+            values.add(tagsSel.lookupName(row.get(i)));
+          }
+          out.add(values);
+          cursor.advance();
         }
-        out.add(values);
-        cursor.advance();
       }
     }
     return out;
@@ -178,7 +180,7 @@ class IndexMergerV10ClusteredTest extends InitializedNullHandlingTest
   private static ClusteredValueGroupsBaseTableProjectionSpec timeOrderedClusterSpec()
   {
     // __time declared as the first non-clustering column, so the segment ordering is [tenant, __time, region] and each
-    // cluster group is individually __time-sorted -- the precondition for the time-ordered merge cursor.
+    // cluster group is individually __time-sorted -- the precondition for time-ordered cursors.
     return ClusteredValueGroupsBaseTableProjectionSpec.builder()
         .columns(
             new StringDimensionSchema("tenant"),
@@ -276,6 +278,15 @@ class IndexMergerV10ClusteredTest extends InitializedNullHandlingTest
     event.put("region", region);
     event.put("x", x);
     return new MapBasedInputRow(ts, List.of("tenant", "region", "x"), event);
+  }
+
+  private static List<ClusterGroupView.ProjectionRole> projectionRoles(List<Segment> views)
+  {
+    final List<ClusterGroupView.ProjectionRole> roles = new ArrayList<>();
+    for (Segment view : views) {
+      roles.add(view.as(ClusterGroupView.class).projectionRole());
+    }
+    return roles;
   }
 
   private QueryableIndex buildSegmentWithProjection(String dirName, List<InputRow> rows)
@@ -393,6 +404,149 @@ class IndexMergerV10ClusteredTest extends InitializedNullHandlingTest
         ),
         scanTenantRegion(index)
     );
+  }
+
+  @Test
+  void testProjectionServedByFirstClusterGroup()
+  {
+    final QueryableIndex index = buildSegmentWithProjection(
+        "first-group-projection",
+        List.of(
+            row(T0 + 2, "globex", "eu-west-1", 7),
+            row(T0, "acme", "us-east-1", 10),
+            row(T0 + 1, "acme", "us-west-2", 5)
+        )
+    );
+
+    // Views acquired without knowing the query are the cluster groups, so the projection, which spans every group, is
+    // served by the first group alone; the other group's cursor is empty.
+    final List<Segment> groups = SegmentViewTestUtil.residentViews(
+        new QueryableIndexSegment(index, SegmentId.dummy("test")),
+        null
+    );
+    Assertions.assertEquals(2, groups.size());
+
+    final CursorBuildSpec buildSpec = projectionMatchingBuildSpec();
+    try (CursorHolder holder = groups.get(0).as(CursorFactory.class).makeCursorHolder(buildSpec)) {
+      Assertions.assertTrue(holder.isPreAggregated(), "expected the projection (pre-aggregated) cursor holder");
+      final Cursor cursor = holder.asCursor();
+      final DimensionSelector tenantSel =
+          cursor.getColumnSelectorFactory().makeDimensionSelector(DefaultDimensionSpec.of("tenant"));
+      final ColumnValueSelector<?> sumSel = cursor.getColumnSelectorFactory().makeColumnValueSelector("sum_x");
+      final Map<String, Long> sums = new LinkedHashMap<>();
+      while (!cursor.isDone()) {
+        sums.put(tenantSel.lookupName(tenantSel.getRow().get(0)), sumSel.getLong());
+        cursor.advance();
+      }
+      Assertions.assertEquals(Map.of("acme", 15L, "globex", 7L), sums);
+    }
+    try (CursorHolder holder = groups.get(1).as(CursorFactory.class).makeCursorHolder(buildSpec)) {
+      Assertions.assertTrue(holder.asCursor().isDone());
+    }
+  }
+
+  @Test
+  void testFirstClusterGroupServesProjectionsOnlyForViewsWithoutSpec()
+  {
+    final QueryableIndex index = buildSegmentWithProjection(
+        "first-group-kept",
+        List.of(
+            row(T0 + 2, "globex", "eu-west-1", 7),
+            row(T0, "acme", "us-east-1", 10)
+        )
+    );
+    final Segment segment = new QueryableIndexSegment(index, SegmentId.dummy("test"));
+
+    // Views acquired without a spec are every group. The first (acme) serves the projection, so its capabilities cover
+    // every group, and the other defers to it.
+    final List<Segment> viewsWithoutSpec = SegmentViewTestUtil.residentViews(segment, null);
+    Assertions.assertEquals(
+        List.of(ClusterGroupView.ProjectionRole.SERVES, ClusterGroupView.ProjectionRole.DEFERS),
+        projectionRoles(viewsWithoutSpec)
+    );
+    Assertions.assertFalse(
+        viewsWithoutSpec.get(0).as(CursorFactory.class).getColumnCapabilities("region").isDictionaryEncoded().isTrue()
+    );
+
+    // A group's results then depend on whether a query matches the projection, so they are not cached per group.
+    // Deliberately not closed: closing the SplitSegment would close the caller's segment.
+    final SplitSegment splitSegment = (SplitSegment) SplitSegment.mapFunction(SegmentMapFunction.IDENTITY, null)
+                                                                 .apply(Optional.of(segment))
+                                                                 .orElseThrow();
+    Assertions.assertFalse(splitSegment.isClusterGroupCacheable());
+
+    // Views acquired with a spec that matches no projection are only the groups the spec does not rule out, which
+    // ignore projections, so each reports its own capabilities.
+    final CursorBuildSpec acmeSpec =
+        CursorBuildSpec.builder()
+                       .setFilter(new EqualityFilter("tenant", ColumnType.STRING, "acme", null))
+                       .build();
+    final List<Segment> acmeViews = SegmentViewTestUtil.residentViews(segment, acmeSpec);
+    Assertions.assertEquals(List.of(ClusterGroupView.ProjectionRole.IGNORES), projectionRoles(acmeViews));
+    Assertions.assertTrue(
+        acmeViews.get(0).as(CursorFactory.class).getColumnCapabilities("region").isDictionaryEncoded().isTrue()
+    );
+
+    final CursorBuildSpec globexSpec =
+        CursorBuildSpec.builder()
+                       .setFilter(new EqualityFilter("tenant", ColumnType.STRING, "globex", null))
+                       .build();
+    final List<Segment> globexViews = SegmentViewTestUtil.residentViews(segment, globexSpec);
+    Assertions.assertEquals(List.of(ClusterGroupView.ProjectionRole.IGNORES), projectionRoles(globexViews));
+
+    // Such a view reads its own rows even for a spec that matches a projection.
+    try (CursorHolder holder =
+             globexViews.get(0).as(CursorFactory.class).makeCursorHolder(projectionMatchingBuildSpec())) {
+      Assertions.assertFalse(holder.isPreAggregated());
+      final Cursor cursor = holder.asCursor();
+      final ColumnValueSelector<?> xSel = cursor.getColumnSelectorFactory().makeColumnValueSelector("x");
+      final List<Long> xs = new ArrayList<>();
+      while (!cursor.isDone()) {
+        xs.add(xSel.getLong());
+        cursor.advance();
+      }
+      Assertions.assertEquals(List.of(7L), xs);
+    }
+  }
+
+  @Test
+  void testProjectionMatchingSpecIsOneProjectionView()
+  {
+    final QueryableIndex index = buildSegmentWithProjection(
+        "projection-view",
+        List.of(
+            row(T0 + 2, "globex", "eu-west-1", 7),
+            row(T0, "acme", "us-east-1", 10),
+            row(T0 + 1, "acme", "us-west-2", 5)
+        )
+    );
+
+    // A spec that matches the projection, which spans every cluster group, needs just the projection.
+    final CursorBuildSpec buildSpec = projectionMatchingBuildSpec();
+    final List<Segment> views = SegmentViewTestUtil.residentViews(
+        new QueryableIndexSegment(index, SegmentId.dummy("test")),
+        buildSpec
+    );
+    Assertions.assertEquals(1, views.size());
+    final Segment view = views.get(0);
+    Assertions.assertInstanceOf(AggregateProjectionSegment.class, view);
+    Assertions.assertNull(view.as(ClusterGroupView.class));
+    // Callers that read columns directly get the projection's rows, one per tenant.
+    Assertions.assertEquals(2, view.as(QueryableIndex.class).getNumRows());
+
+    try (CursorHolder holder = view.as(CursorFactory.class).makeCursorHolder(buildSpec)) {
+      Assertions.assertTrue(holder.isPreAggregated(), "expected the projection (pre-aggregated) cursor holder");
+      final Cursor cursor = holder.asCursor();
+      final DimensionSelector tenantSel =
+          cursor.getColumnSelectorFactory().makeDimensionSelector(DefaultDimensionSpec.of("tenant"));
+      final ColumnValueSelector<?> sumSel = cursor.getColumnSelectorFactory().makeColumnValueSelector("sum_x");
+      final Map<String, Long> sums = new LinkedHashMap<>();
+      while (!cursor.isDone()) {
+        sums.put(tenantSel.lookupName(tenantSel.getRow().get(0)), sumSel.getLong());
+        cursor.advance();
+      }
+      Assertions.assertEquals(Map.of("acme", 15L, "globex", 7L), sums);
+    }
   }
 
   @Test
@@ -567,7 +721,7 @@ class IndexMergerV10ClusteredTest extends InitializedNullHandlingTest
   }
 
   @Test
-  void testTimeOrderedMergeAcrossGroups()
+  void testTimeOrderedGroups()
   {
     // Two tenants (=> two cluster groups) with interleaved timestamps, ingested out of order.
     final QueryableIndex index = buildTimeOrderedSegment(
@@ -587,63 +741,56 @@ class IndexMergerV10ClusteredTest extends InitializedNullHandlingTest
         summary.getGroupOrdering().get(0).getColumnName()
     );
 
-    final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
-        index,
-        QueryableIndexTimeBoundaryInspector.create(index)
-    );
+    final List<CursorFactory> groupFactories = SegmentViewTestUtil.viewCursorFactories(index);
+    Assertions.assertEquals(2, groupFactories.size());
 
-    // No preferred ordering => concatenation: clustering-first ordering, NOT globally __time-ordered (each group's
-    // rows are contiguous: acme's two rows, then globex's two rows).
-    try (CursorHolder holder = factory.makeCursorHolder(CursorBuildSpec.FULL_SCAN)) {
-      Assertions.assertEquals("tenant", holder.getOrdering().get(0).getColumnName());
-      Assertions.assertEquals(
-          List.of(
-              Arrays.asList(T0 + 1, "a1"),
-              Arrays.asList(T0 + 4, "a4"),
-              Arrays.asList(T0 + 2, "g2"),
-              Arrays.asList(T0 + 3, "g3")
-          ),
-          scanTimeRegion(holder)
-      );
+    // No preferred ordering => each group advertises the clustering-first segment ordering.
+    for (CursorFactory factory : groupFactories) {
+      try (CursorHolder holder = factory.makeCursorHolder(CursorBuildSpec.FULL_SCAN)) {
+        Assertions.assertEquals("tenant", holder.getOrdering().get(0).getColumnName());
+      }
     }
 
-    // Ascending __time preferred => the time-ordered merge cursor: holder advertises __time ASC and rows are globally
-    // time-ordered across groups.
+    // Ascending __time preferred => each group advertises its own ordering, which starts with __time ASC, and reads its
+    // rows in time order. Merging them across groups is up to the query engines, as for separate segments.
     final CursorBuildSpec ascending = CursorBuildSpec.builder(CursorBuildSpec.FULL_SCAN)
         .setPreferredOrdering(List.of(OrderBy.ascending(ColumnHolder.TIME_COLUMN_NAME)))
         .build();
-    try (CursorHolder holder = factory.makeCursorHolder(ascending)) {
-      Assertions.assertEquals(Cursors.ascendingTimeOrder(), holder.getOrdering());
-      Assertions.assertEquals(Order.ASCENDING, holder.getTimeOrder());
-      Assertions.assertFalse(holder.canVectorize(), "scalar-first: the merge holder is not vectorizable");
-      Assertions.assertEquals(
-          List.of(
-              Arrays.asList(T0 + 1, "a1"),
-              Arrays.asList(T0 + 2, "g2"),
-              Arrays.asList(T0 + 3, "g3"),
-              Arrays.asList(T0 + 4, "a4")
-          ),
-          scanTimeRegion(holder)
-      );
+    final List<List<List<Object>>> ascendingRows = new ArrayList<>();
+    for (CursorFactory factory : groupFactories) {
+      try (CursorHolder holder = factory.makeCursorHolder(ascending)) {
+        Assertions.assertEquals(summary.getGroupOrdering(), holder.getOrdering());
+        Assertions.assertEquals(Order.ASCENDING, holder.getTimeOrder());
+        ascendingRows.add(scanTimeRegion(holder));
+      }
     }
+    Assertions.assertEquals(
+        List.of(
+            List.of(Arrays.asList(T0 + 1, "a1"), Arrays.asList(T0 + 4, "a4")),
+            List.of(Arrays.asList(T0 + 2, "g2"), Arrays.asList(T0 + 3, "g3"))
+        ),
+        ascendingRows
+    );
 
-    // Descending __time preferred => descending merge (each per-group cursor reverses, merged with a max-heap).
+    // Descending __time preferred => each group reads its rows in reverse time order.
     final CursorBuildSpec descending = CursorBuildSpec.builder(CursorBuildSpec.FULL_SCAN)
         .setPreferredOrdering(List.of(OrderBy.descending(ColumnHolder.TIME_COLUMN_NAME)))
         .build();
-    try (CursorHolder holder = factory.makeCursorHolder(descending)) {
-      Assertions.assertEquals(Cursors.descendingTimeOrder(), holder.getOrdering());
-      Assertions.assertEquals(Order.DESCENDING, holder.getTimeOrder());
-      Assertions.assertEquals(
-          List.of(
-              Arrays.asList(T0 + 4, "a4"),
-              Arrays.asList(T0 + 3, "g3"),
-              Arrays.asList(T0 + 2, "g2"),
-              Arrays.asList(T0 + 1, "a1")
-          ),
-          scanTimeRegion(holder)
-      );
+    final List<List<List<Object>>> descendingRows = new ArrayList<>();
+    for (CursorFactory factory : groupFactories) {
+      try (CursorHolder holder = factory.makeCursorHolder(descending)) {
+        Assertions.assertEquals(Cursors.descendingTimeOrder(), holder.getOrdering());
+        Assertions.assertEquals(Order.DESCENDING, holder.getTimeOrder());
+        descendingRows.add(scanTimeRegion(holder));
+      }
     }
+    Assertions.assertEquals(
+        List.of(
+            List.of(Arrays.asList(T0 + 4, "a4"), Arrays.asList(T0 + 1, "a1")),
+            List.of(Arrays.asList(T0 + 3, "g3"), Arrays.asList(T0 + 2, "g2"))
+        ),
+        descendingRows
+    );
   }
 
   @Test

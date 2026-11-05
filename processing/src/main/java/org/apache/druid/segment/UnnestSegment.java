@@ -49,6 +49,15 @@ public class UnnestSegment extends WrappedSegment
       return (T) new UnnestCursorFactory(delegate.as(CursorFactory.class), unnestColumn, filter);
     } else if (TopNOptimizationInspector.class.equals(clazz)) {
       return (T) new SimpleTopNOptimizationInspector(filter == null);
+    } else if (SegmentViewFetcher.class.equals(clazz)) {
+      final SegmentViewFetcher fetcher = delegate.as(SegmentViewFetcher.class);
+      if (fetcher != null) {
+        return (T) SegmentViewFetcher.wrap(
+            fetcher,
+            new UnnestCursorFactory(delegate.as(CursorFactory.class), unnestColumn, filter)::delegateSpec,
+            view -> new UnnestSegment(view, unnestColumn, filter)
+        );
+      }
     }
     return null;
   }

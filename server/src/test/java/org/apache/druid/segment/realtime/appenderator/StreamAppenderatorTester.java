@@ -60,6 +60,7 @@ import org.apache.druid.query.timeseries.TimeseriesQueryQueryToolChest;
 import org.apache.druid.query.timeseries.TimeseriesQueryRunnerFactory;
 import org.apache.druid.segment.IndexIO;
 import org.apache.druid.segment.IndexMerger;
+import org.apache.druid.segment.IndexMergerV10;
 import org.apache.druid.segment.IndexMergerV9;
 import org.apache.druid.segment.IndexSpec;
 import org.apache.druid.segment.column.ColumnConfig;
@@ -78,6 +79,7 @@ import org.apache.druid.server.coordination.NoopDataSegmentAnnouncer;
 import org.apache.druid.timeline.DataSegment;
 import org.apache.druid.timeline.partition.LinearShardSpec;
 
+import javax.annotation.Nullable;
 import java.io.File;
 import java.io.IOException;
 import java.net.URI;
@@ -115,7 +117,9 @@ public class StreamAppenderatorTester implements AutoCloseable
       final PolicyEnforcer policyEnforcer,
       final boolean releaseLocksOnHandoff,
       final TaskIntervalUnlocker taskIntervalUnlocker,
-      final SegmentGenerationMetrics segmentGenerationMetrics
+      final SegmentGenerationMetrics segmentGenerationMetrics,
+      @Nullable final DataSchema schemaOverride,
+      final boolean useV10
   )
   {
     objectMapper = new DefaultObjectMapper();
@@ -128,7 +132,7 @@ public class StreamAppenderatorTester implements AutoCloseable
             .addValue(ObjectMapper.class.getName(), objectMapper)
     );
 
-    schema = DataSchema.builder()
+    schema = schemaOverride != null ? schemaOverride : DataSchema.builder()
                        .withDataSource(DATASOURCE)
                        .withTimestamp(new TimestampSpec("ts", "auto", null))
                        .withDimensions(DimensionsSpec.EMPTY)
@@ -163,11 +167,17 @@ public class StreamAppenderatorTester implements AutoCloseable
         }
     );
 
-    IndexMergerV9 indexMerger = new IndexMergerV9(
-        objectMapper,
-        indexIO,
-        OffHeapMemorySegmentWriteOutMediumFactory.instance()
-    );
+    final IndexMerger indexMerger = useV10
+                                    ? new IndexMergerV10(
+                                        objectMapper,
+                                        indexIO,
+                                        OffHeapMemorySegmentWriteOutMediumFactory.instance()
+                                    )
+                                    : new IndexMergerV9(
+                                        objectMapper,
+                                        indexIO,
+                                        OffHeapMemorySegmentWriteOutMediumFactory.instance()
+                                    );
 
     emitter = serviceEmitter == null ? new ServiceEmitter(
         "test",
@@ -336,6 +346,9 @@ public class StreamAppenderatorTester implements AutoCloseable
     private boolean releaseLocksOnHandoff;
     private TaskIntervalUnlocker taskIntervalUnlocker = interval -> {};
     private SegmentGenerationMetrics segmentGenerationMetrics;
+    @Nullable
+    private DataSchema schema;
+    private boolean useV10;
 
     public Builder maxRowsInMemory(final int maxRowsInMemory)
     {
@@ -409,6 +422,24 @@ public class StreamAppenderatorTester implements AutoCloseable
       return this;
     }
 
+    /**
+     * Uses {@code schema} instead of the default schema of {@link #DATASOURCE}.
+     */
+    public Builder withDataSchema(final DataSchema schema)
+    {
+      this.schema = schema;
+      return this;
+    }
+
+    /**
+     * Whether to persist and merge segments in the V10 format, which clustered base tables require.
+     */
+    public Builder useV10(final boolean useV10)
+    {
+      this.useV10 = useV10;
+      return this;
+    }
+
     public StreamAppenderatorTester build()
     {
       return new StreamAppenderatorTester(
@@ -425,7 +456,9 @@ public class StreamAppenderatorTester implements AutoCloseable
           policyEnforcer,
           releaseLocksOnHandoff,
           taskIntervalUnlocker,
-          segmentGenerationMetrics
+          segmentGenerationMetrics,
+          schema,
+          useV10
       );
     }
 
@@ -448,7 +481,9 @@ public class StreamAppenderatorTester implements AutoCloseable
           policyEnforcer,
           releaseLocksOnHandoff,
           taskIntervalUnlocker,
-          segmentGenerationMetrics
+          segmentGenerationMetrics,
+          schema,
+          useV10
       );
     }
   }

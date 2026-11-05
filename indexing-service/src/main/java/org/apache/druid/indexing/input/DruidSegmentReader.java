@@ -33,7 +33,6 @@ import org.apache.druid.data.input.IntermediateRowParsingReader;
 import org.apache.druid.data.input.impl.DimensionsSpec;
 import org.apache.druid.data.input.impl.MapInputRowParser;
 import org.apache.druid.data.input.impl.TimestampSpec;
-import org.apache.druid.java.util.common.CloseableIterators;
 import org.apache.druid.java.util.common.guava.Sequence;
 import org.apache.druid.java.util.common.guava.Sequences;
 import org.apache.druid.java.util.common.guava.Yielder;
@@ -41,6 +40,7 @@ import org.apache.druid.java.util.common.guava.Yielders;
 import org.apache.druid.java.util.common.parsers.CloseableIterator;
 import org.apache.druid.java.util.common.parsers.ParseException;
 import org.apache.druid.query.filter.DimFilter;
+import org.apache.druid.segment.AcquiredView;
 import org.apache.druid.segment.BaseDoubleColumnValueSelector;
 import org.apache.druid.segment.BaseFloatColumnValueSelector;
 import org.apache.druid.segment.BaseLongColumnValueSelector;
@@ -55,11 +55,13 @@ import org.apache.druid.segment.DimensionSelector;
 import org.apache.druid.segment.IndexIO;
 import org.apache.druid.segment.QueryableIndex;
 import org.apache.druid.segment.QueryableIndexCursorFactory;
+import org.apache.druid.segment.QueryableIndexSegment;
+import org.apache.druid.segment.SegmentViewFetcher;
 import org.apache.druid.segment.column.ColumnCapabilities;
 import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.data.IndexedInts;
 import org.apache.druid.segment.filter.Filters;
-import org.apache.druid.segment.realtime.WindowedCursorFactory;
+import org.apache.druid.timeline.SegmentId;
 import org.apache.druid.utils.CloseableUtils;
 import org.apache.druid.utils.CollectionUtils;
 import org.joda.time.Interval;
@@ -121,29 +123,40 @@ public class DruidSegmentReader extends IntermediateRowParsingReader<Map<String,
   {
     final CleanableFile segmentFile = source().fetch(temporaryDirectory, null);
     final QueryableIndex queryableIndex = indexIO.loadIndex(segmentFile.file());
-    final WindowedCursorFactory windowedCursorFactory = new WindowedCursorFactory(
-        new QueryableIndexCursorFactory(queryableIndex),
-        intervalFilter
-    );
     final CursorBuildSpec cursorBuildSpec = CursorBuildSpec.builder()
                                                            .setFilter(Filters.toFilter(dimFilter))
-                                                           .setInterval(windowedCursorFactory.getInterval())
+                                                           .setInterval(intervalFilter)
                                                            .build();
-
-    final CursorFactory cursorFactory = windowedCursorFactory.getCursorFactory();
-    final CursorHolder cursorHolder = cursorFactory.makeCursorHolder(cursorBuildSpec);
-    final Cursor cursor = cursorHolder.asCursor();
-    if (cursor == null) {
-      return CloseableIterators.wrap(Collections.emptyIterator(), cursorHolder);
-    }
 
     // Retain order of columns from the original segments. Useful for preserving dimension order if we're in
     // schemaless mode.
     final Set<String> columnsToRead = Sets.newLinkedHashSet(
-        Iterables.filter(cursorFactory.getRowSignature().getColumnNames(), columnsFilter::apply)
+        Iterables.filter(
+            new QueryableIndexCursorFactory(queryableIndex).getRowSignature().getColumnNames(),
+            columnsFilter::apply
+        )
     );
 
-    final Sequence<Map<String, Object>> sequence = cursorToSequence(cursor, columnsToRead).withBaggage(cursorHolder);
+    // Read each view of the segment with its own cursor, since a cursor cannot span the cluster groups of a clustered
+    // segment. Views of a QueryableIndexSegment are resident, so they are ready immediately.
+    final List<AcquiredView> views =
+        new QueryableIndexSegment(queryableIndex, SegmentId.dummy("reader"))
+            .as(SegmentViewFetcher.class)
+            .acquireViews(cursorBuildSpec);
+    final Sequence<Map<String, Object>> sequence = Sequences.concat(
+        Sequences.map(
+            Sequences.simple(views),
+            view -> {
+              final CursorHolder cursorHolder =
+                  view.view().get().as(CursorFactory.class).makeCursorHolder(cursorBuildSpec);
+              final Cursor cursor = cursorHolder.asCursor();
+              if (cursor == null) {
+                return Sequences.<Map<String, Object>>empty().withBaggage(cursorHolder);
+              }
+              return cursorToSequence(cursor, columnsToRead).withBaggage(cursorHolder);
+            }
+        )
+    ).withBaggage(CloseableUtils.forIterable(views.stream().map(AcquiredView::view).toList()));
 
     return makeCloseableIteratorFromSequenceAndSegmentFile(sequence, segmentFile);
   }

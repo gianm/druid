@@ -77,11 +77,11 @@ import java.util.Map;
 
 /**
  * Functional coverage that the time-ordering query engines work over a CLUSTERED base-table segment whose {@code
- * __time} is the first non-clustering column (so the read path serves them via the k-way {@code __time} merge; see
- * {@link MergingClusterGroupCursor}). Runs a granular {@code timeseries} and an ascending/descending native {@code
- * scan} — scan hard-enforces cursor time ordering, so a passing time-ordered scan over a multi-group clustered segment
- * could not happen without the merge. Each result is also compared against an equivalent non-clustered (naturally
- * {@code __time}-sorted) segment to pin correctness.
+ * __time} is the first non-clustering column (so each cluster group is {@code __time}-sorted, and segment walkers merge
+ * the results of the groups by {@code __time}; see {@link SplitSegment}). Runs a granular {@code timeseries} and an
+ * ascending/descending native {@code scan} — scan hard-enforces cursor time ordering, so a passing time-ordered scan
+ * over a multi-group clustered segment could not happen without the merge. Each result is also compared against an
+ * equivalent non-clustered (naturally {@code __time}-sorted) segment to pin correctness.
  */
 class ClusteredSegmentTimeOrderedQueryTest extends InitializedNullHandlingTest
 {
@@ -213,8 +213,8 @@ class ClusteredSegmentTimeOrderedQueryTest extends InitializedNullHandlingTest
   void testAscendingScanWithQueryVcEquivalentToClusteringColumn()
   {
     // Clustered on tenant_lower := lower(tenant), with __time the first non-clustering column, so a time-ordered scan
-    // takes the k-way merge. A query VC v0 := lower(tenant) is equivalent to the materialized clustering column
-    // tenant_lower, so the merge's RemapColumnSelectorFactory must resolve reads of v0 to tenant_lower. Without that
+    // merges the groups by __time. A query VC v0 := lower(tenant) is equivalent to the materialized clustering column
+    // tenant_lower, so each group's RemapColumnSelectorFactory must resolve reads of v0 to tenant_lower. Without that
     // wrapper the per-group cursor would not find v0 (rebuildCursorBuildSpec drops the remapped VC from the per-group
     // spec), so v0 would read as null and this test would fail.
     final Segment clustered = new QueryableIndexSegment(
@@ -234,10 +234,9 @@ class ClusteredSegmentTimeOrderedQueryTest extends InitializedNullHandlingTest
   void testAscendingScanWithQueryVcShadowingClusteringColumn()
   {
     // A query VC whose OUTPUT name shadows the clustering column `tenant` but computes a different value (from `m`, not
-    // equivalent to any materialized column, so it is NOT remapped away). On the __time merge path the merge factory
-    // must dispatch reads of `tenant` to the winning group (which resolves the VC) rather than serve the raw clustering
-    // constant. Without the shadowing guard this returned the group constant ("acme"/"globex") instead of the computed
-    // value, diverging from the concatenating path.
+    // equivalent to any materialized column, so it is NOT remapped away). Each group's cursor must resolve reads of
+    // `tenant` to the VC rather than serve the raw clustering constant. Without the shadowing guard this returned the
+    // group constant ("acme"/"globex") instead of the computed value.
     final List<List<Object>> expected = List.of(
         Arrays.asList(T0, "t_1", 1L),
         Arrays.asList(T0 + MINUTE, "t_2", 2L),
@@ -265,9 +264,9 @@ class ClusteredSegmentTimeOrderedQueryTest extends InitializedNullHandlingTest
   @Test
   void testTimeOrderedQueriesOverIncrementalClusteredSegment()
   {
-    // The realtime path (IncrementalIndexCursorFactory) must also k-way-merge groups for a __time-ordered query.
-    // Incremental per-group cursors do not carry clustering columns, so this also exercises the merge factory
-    // injecting the winning group's clustering value (tenant). Results must match the non-clustered baseline.
+    // The realtime path (IncrementalIndexCursorFactory) must also merge groups by __time for a __time-ordered query.
+    // Incremental per-group cursors do not store clustering columns, so this also exercises each group's cursor
+    // injecting its clustering value (tenant). Results must match the non-clustered baseline.
     final Segment incremental = buildClusteredIncremental(ROWS);
 
     Assertions.assertEquals(
@@ -317,7 +316,7 @@ class ClusteredSegmentTimeOrderedQueryTest extends InitializedNullHandlingTest
         QueryRunnerTestHelper.NOOP_QUERYWATCHER
     );
     final List<Result<TimeseriesResultValue>> results =
-        factory.createRunner(segment).run(QueryPlus.wrap(query)).toList();
+        QueryRunnerTestHelper.makeSplittingQueryRunner(factory, segment).run(QueryPlus.wrap(query)).toList();
     final List<List<Long>> out = new ArrayList<>();
     for (Result<TimeseriesResultValue> result : results) {
       final long sum = ((Number) result.getValue().getMetric("sum_m")).longValue();
@@ -348,9 +347,10 @@ class ClusteredSegmentTimeOrderedQueryTest extends InitializedNullHandlingTest
         new ScanQueryEngine(),
         new ScanQueryConfig()
     );
-    final List<ScanResultValue> results = factory.createRunner(segment).run(QueryPlus.wrap(query)).toList();
+    final List<ScanResultValue> results =
+        QueryRunnerTestHelper.makeSplittingQueryRunner(factory, segment).run(QueryPlus.wrap(query)).toList();
     // Extract full [__time, tenant, m] rows so the comparison against the non-clustered baseline verifies per-column
-    // dispatch (winning group's tenant/m paired with the right __time), not just the time column.
+    // values (each group's tenant/m paired with the right __time), not just the time column.
     final List<List<Object>> rows = new ArrayList<>();
     for (ScanResultValue result : results) {
       for (Object event : (List<?>) result.getEvents()) {
@@ -369,7 +369,7 @@ class ClusteredSegmentTimeOrderedQueryTest extends InitializedNullHandlingTest
   /**
    * Time-ordered scan projecting the query virtual column {@code v0 := lower(tenant)} (plus {@code __time} and
    * {@code m}), extracting {@code [__time, v0, m]} rows. Used to exercise the query-VC -> materialized-column remap on
-   * the {@code __time} merge path.
+   * time-ordered group cursors.
    */
   private static List<List<Object>> runScanWithLowerTenantVc(Segment segment, Order order)
   {
@@ -391,7 +391,8 @@ class ClusteredSegmentTimeOrderedQueryTest extends InitializedNullHandlingTest
         new ScanQueryEngine(),
         new ScanQueryConfig()
     );
-    final List<ScanResultValue> results = factory.createRunner(segment).run(QueryPlus.wrap(query)).toList();
+    final List<ScanResultValue> results =
+        QueryRunnerTestHelper.makeSplittingQueryRunner(factory, segment).run(QueryPlus.wrap(query)).toList();
     final List<List<Object>> rows = new ArrayList<>();
     for (ScanResultValue result : results) {
       for (Object event : (List<?>) result.getEvents()) {
@@ -410,7 +411,7 @@ class ClusteredSegmentTimeOrderedQueryTest extends InitializedNullHandlingTest
   /**
    * Time-ordered scan projecting a query virtual column {@code tenant := concat('t_', m)} whose output name shadows the
    * clustering column {@code tenant} (plus {@code __time} and {@code m}), extracting {@code [__time, tenant, m]} rows.
-   * Exercises the shadowing-VC guard on the {@code __time} merge path: reads of {@code tenant} must resolve to the
+   * Exercises the shadowing-VC guard on time-ordered group cursors: reads of {@code tenant} must resolve to the
    * computed VC value, not the group's clustering constant.
    */
   private static List<List<Object>> runScanWithShadowingTenantVc(Segment segment, Order order)
@@ -433,7 +434,8 @@ class ClusteredSegmentTimeOrderedQueryTest extends InitializedNullHandlingTest
         new ScanQueryEngine(),
         new ScanQueryConfig()
     );
-    final List<ScanResultValue> results = factory.createRunner(segment).run(QueryPlus.wrap(query)).toList();
+    final List<ScanResultValue> results =
+        QueryRunnerTestHelper.makeSplittingQueryRunner(factory, segment).run(QueryPlus.wrap(query)).toList();
     final List<List<Object>> rows = new ArrayList<>();
     for (ScanResultValue result : results) {
       for (Object event : (List<?>) result.getEvents()) {
@@ -452,7 +454,7 @@ class ClusteredSegmentTimeOrderedQueryTest extends InitializedNullHandlingTest
   private QueryableIndex buildClusteredWithMaterializedVc(String dirName)
   {
     // Cluster on the group VC tenant_lower := lower(tenant); declare __time immediately after the clustering column so
-    // it is the first non-clustering column (each group is __time-sorted => merge path). The raw tenant input is
+    // it is the first non-clustering column (each group is __time-sorted). The raw tenant input is
     // retained so the group VC's input is materialized (a spec-construction requirement).
     final ClusteredValueGroupsBaseTableProjectionSpec clusterSpec =
         ClusteredValueGroupsBaseTableProjectionSpec.builder()

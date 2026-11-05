@@ -43,6 +43,7 @@ import org.apache.druid.query.QueryRunnerFactoryConglomerate;
 import org.apache.druid.query.QuerySegmentWalker;
 import org.apache.druid.query.QueryToolChest;
 import org.apache.druid.query.SegmentDescriptor;
+import org.apache.druid.query.SinkQueryRunners;
 import org.apache.druid.query.context.ResponseContext;
 import org.apache.druid.query.context.ResponseContext.Keys;
 import org.apache.druid.query.groupby.GroupByQueryRunnerTestHelper;
@@ -51,7 +52,9 @@ import org.apache.druid.query.policy.NoopPolicyEnforcer;
 import org.apache.druid.query.spec.SpecificSegmentQueryRunner;
 import org.apache.druid.query.spec.SpecificSegmentSpec;
 import org.apache.druid.segment.ReferenceCountedSegmentProvider;
+import org.apache.druid.segment.Segment;
 import org.apache.druid.segment.SegmentMapFunction;
+import org.apache.druid.segment.SplitSegment;
 import org.apache.druid.timeline.DataSegment;
 import org.apache.druid.timeline.TimelineObjectHolder;
 import org.apache.druid.timeline.VersionedIntervalTimeline;
@@ -165,7 +168,11 @@ public class TestClusterQuerySegmentWalker implements QuerySegmentWalker
       throw new ISE("Cannot handle subquery: %s", dataSourceFromQuery);
     }
 
-    final SegmentMapFunction segmentMapFn = ev.createSegmentMapFunction(NoopPolicyEnforcer.instance());
+    // Split clustered segments into cluster groups, like ServerManager does.
+    final SegmentMapFunction segmentMapFn = SplitSegment.mapFunction(
+        ev.createSegmentMapFunction(NoopPolicyEnforcer.instance()),
+        ev.getSegmentPruner()
+    );
 
     final QueryRunner<T> baseRunner = new FinalizeResultsQueryRunner<>(
         toolChest.postMergeQueryDecoration(
@@ -245,24 +252,40 @@ public class TestClusterQuerySegmentWalker implements QuerySegmentWalker
       {
         final Closer closer = Closer.create();
         try {
+          final List<SinkQueryRunners.PartitionRunner<T>> runners = new ArrayList<>();
+          for (final WindowedSegment segment : segmentsList) {
+            final Segment mappedSegment = closer.register(
+                segmentMapFn.apply(referenceProviders.get(segment.getSegment()).acquireReference()).orElseThrow()
+            );
+            final List<Segment> segmentsToProcess;
+            if (mappedSegment instanceof SplitSegment splitSegment) {
+              segmentsToProcess = new ArrayList<>();
+              for (SplitSegment.MappedClusterGroup clusterGroup : splitSegment.getClusterGroups()) {
+                segmentsToProcess.add(clusterGroup.segment());
+              }
+            } else {
+              segmentsToProcess = List.of(mappedSegment);
+            }
+            for (final Segment segmentToProcess : segmentsToProcess) {
+              // Like ServerManager, use the descriptor as the partition key, so the groups of a segment share it.
+              runners.add(
+                  new SinkQueryRunners.PartitionRunner<>(
+                      segment.getDescriptor().getInterval(),
+                      segment.getDescriptor(),
+                      new SpecificSegmentQueryRunner<>(
+                          factory.createRunner(segmentToProcess),
+                          new SpecificSegmentSpec(segment.getDescriptor())
+                      )
+                  )
+              );
+            }
+          }
+
           QueryRunner<T> runner = new FinalizeResultsQueryRunner<>(
               toolChest.mergeResults(
                   factory.mergeRunners(
                       DirectQueryProcessingPool.INSTANCE,
-                      FunctionalIterable
-                          .create(segmentsList)
-                          .transform(
-                              segment ->
-                                  new SpecificSegmentQueryRunner<>(
-                                      factory.createRunner(
-                                          closer.register(
-                                              segmentMapFn.apply(referenceProviders.get(segment.getSegment()).acquireReference())
-                                                          .orElseThrow()
-                                          )
-                                      ),
-                                      new SpecificSegmentSpec(segment.getDescriptor())
-                                  )
-                          )
+                      SinkQueryRunners.fromPartitionRunners(runners)
                   ),
                   true
               ),

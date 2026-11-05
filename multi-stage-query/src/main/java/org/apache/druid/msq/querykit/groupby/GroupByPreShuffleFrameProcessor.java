@@ -62,6 +62,7 @@ import org.apache.druid.query.spec.MultipleIntervalSegmentSpec;
 import org.apache.druid.query.spec.SpecificSegmentSpec;
 import org.apache.druid.segment.AsyncCursorHolder;
 import org.apache.druid.segment.ColumnSelectorFactory;
+import org.apache.druid.segment.CursorBuildSpec;
 import org.apache.druid.segment.CursorFactory;
 import org.apache.druid.segment.CursorHolder;
 import org.apache.druid.segment.Segment;
@@ -103,7 +104,7 @@ public class GroupByPreShuffleFrameProcessor extends BaseLeafFrameProcessor
   @Nullable
   private TimeBoundaryInspector currentTimeBoundaryInspector;
   /**
-   * In-flight {@link GroupingEngine#makeCursorHolderAsync} handle for the current segment, when {@link #resultYielder}
+   * In-flight {@link CursorFactory#makeCursorHolderAsync} handle for the current segment, when {@link #resultYielder}
    * has not yet been derived. Registered on {@link #closer} so the produced {@link CursorHolder} is always disposed
    * regardless of where the underlying load is in its lifecycle. Cleared after we transfer ownership of the holder to
    * {@link GroupingEngine#processCursorHolder} (which moves it onto the resulting Sequence's baggage closer).
@@ -207,11 +208,8 @@ public class GroupByPreShuffleFrameProcessor extends BaseLeafFrameProcessor
         final Segment segment = mapSegment(segmentHolder, closer);
         currentTimeBoundaryInspector = segment.as(TimeBoundaryInspector.class);
 
-        if (GroupByTimeBoundaryUtils.canUseTimeBoundaryInspector(
-            query,
-            currentTimeBoundaryInspector,
-            segmentHolder.getDescriptor()
-        )) {
+        final CursorBuildSpec spec = makeCursorBuildSpec(query, segment, segmentHolder.getDescriptor());
+        if (spec == null) {
           // Resolve this query using the TimeBoundaryInspector, no need for a cursor.
           resultYielder = Yielders.each(
               Sequences.simple(
@@ -221,13 +219,7 @@ public class GroupByPreShuffleFrameProcessor extends BaseLeafFrameProcessor
         } else {
           currentCursorFactory = Objects.requireNonNull(segment.as(CursorFactory.class));
           // Resolve this query using a cursor.
-          asyncCursorHolder = closer.register(
-              groupingEngine.makeCursorHolderAsync(
-                  computeQueryForSegment(segmentHolder.getDescriptor()),
-                  currentCursorFactory,
-                  null
-              )
-          );
+          asyncCursorHolder = closer.register(currentCursorFactory.makeCursorHolderAsync(spec));
         }
       }
 
@@ -243,7 +235,7 @@ public class GroupByPreShuffleFrameProcessor extends BaseLeafFrameProcessor
         // currentCursorFactory is non-null whenever asyncCursorHolder is non-null (both are set together in the
         // first-invocation branch above). The requireNonNull pins the invariant for static analysis.
         final Sequence<ResultRow> rowSequence = groupingEngine.processCursorHolder(
-            computeQueryForSegment(segmentHolder.getDescriptor()),
+            computeQueryForSegment(query, segmentHolder.getDescriptor()),
             Objects.requireNonNull(currentCursorFactory),
             holder,
             currentTimeBoundaryInspector,
@@ -365,7 +357,31 @@ public class GroupByPreShuffleFrameProcessor extends BaseLeafFrameProcessor
     }
   }
 
-  private GroupByQuery computeQueryForSegment(final SegmentDescriptor descriptor)
+  /**
+   * Returns the spec that processors for {@code query} build cursors with on {@code segment}, the segment of
+   * {@code descriptor}, or null if they answer the query using the segment's time boundaries, without cursors.
+   */
+  @Nullable
+  static CursorBuildSpec makeCursorBuildSpec(
+      final GroupByQuery query,
+      final Segment segment,
+      final SegmentDescriptor descriptor
+  )
+  {
+    if (GroupByTimeBoundaryUtils.canUseTimeBoundaryInspector(
+        query,
+        segment.as(TimeBoundaryInspector.class),
+        descriptor
+    )) {
+      return null;
+    }
+    return GroupingEngine.makeCursorBuildSpec(computeQueryForSegment(query, descriptor), null);
+  }
+
+  /**
+   * Returns {@code query} as processors run it on the segment of {@code descriptor}.
+   */
+  static GroupByQuery computeQueryForSegment(final GroupByQuery query, final SegmentDescriptor descriptor)
   {
     return (GroupByQuery) query
         .withQuerySegmentSpec(new SpecificSegmentSpec(descriptor))

@@ -28,6 +28,7 @@ import org.apache.druid.data.input.impl.ClusteredValueGroupsBaseTableProjectionS
 import org.apache.druid.data.input.impl.LongDimensionSchema;
 import org.apache.druid.data.input.impl.StringDimensionSchema;
 import org.apache.druid.data.input.impl.TimestampSpec;
+import org.apache.druid.error.DruidException;
 import org.apache.druid.java.util.common.DateTimes;
 import org.apache.druid.java.util.common.Intervals;
 import org.apache.druid.java.util.common.granularity.Granularities;
@@ -56,6 +57,7 @@ import org.apache.druid.query.groupby.GroupingEngine;
 import org.apache.druid.query.groupby.ResultRow;
 import org.apache.druid.query.timeseries.TimeseriesQuery;
 import org.apache.druid.query.timeseries.TimeseriesQueryEngine;
+import org.apache.druid.query.timeseries.TimeseriesQueryQueryToolChest;
 import org.apache.druid.query.timeseries.TimeseriesResultValue;
 import org.apache.druid.segment.column.ColumnCapabilities;
 import org.apache.druid.segment.column.ColumnHolder;
@@ -71,6 +73,7 @@ import org.apache.druid.segment.vector.VectorObjectSelector;
 import org.apache.druid.segment.virtual.ExpressionVirtualColumn;
 import org.apache.druid.testing.InitializedNullHandlingTest;
 import org.apache.druid.testing.TemporaryFolderExtension;
+import org.apache.druid.timeline.SegmentId;
 import org.joda.time.Interval;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -83,11 +86,13 @@ import javax.annotation.Nullable;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BinaryOperator;
 
 /**
  * End-to-end coverage for {@link QueryableIndexCursorFactory}'s clustered dispatch. Builds real clustered base-table
@@ -193,20 +198,14 @@ class QueryableIndexCursorFactoryClusteredTest extends InitializedNullHandlingTe
   {
     // Query VC v0 := lower(tenant) is equivalent to the clustering column tenant_lower. The scalar selector remap
     // substitutes the materialized tenant_lower clustering constant instead of recomputing lower(tenant) from the
-    // retained raw column. Read via asCursor() (non-vector) to exercise the scalar ClusteringColumnSelectorFactory path.
+    // retained raw column. Read via asCursor() (non-vector) to exercise the scalar RemapColumnSelectorFactory path.
     segmentIndex = buildVirtualClusteringSegment();
-    final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
-        segmentIndex,
-        QueryableIndexTimeBoundaryInspector.create(segmentIndex)
-    );
     final CursorBuildSpec buildSpec = CursorBuildSpec.builder()
         .setVirtualColumns(VirtualColumns.create(
             new ExpressionVirtualColumn("v0", "lower(tenant)", ColumnType.STRING, TestExprMacroTable.INSTANCE)
         ))
         .build();
-    try (CursorHolder holder = factory.makeCursorHolder(buildSpec)) {
-      Assertions.assertEquals(List.of("acme", "acme", "globex"), collectDimension(holder.asCursor(), "v0"));
-    }
+    Assertions.assertEquals(List.of("acme", "acme", "globex"), collectDimension(buildSpec, "v0"));
   }
 
   @Test
@@ -215,21 +214,15 @@ class QueryableIndexCursorFactoryClusteredTest extends InitializedNullHandlingTe
     // Query VC v1 := upper(region) is equivalent to the non-clustering materialized column region_upper. The remap
     // makes makeDimensionSelector("v1") read the per-group physical region_upper column.
     segmentIndex = buildVirtualClusteringSegment();
-    final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
-        segmentIndex,
-        QueryableIndexTimeBoundaryInspector.create(segmentIndex)
-    );
     final CursorBuildSpec buildSpec = CursorBuildSpec.builder()
         .setVirtualColumns(VirtualColumns.create(
             new ExpressionVirtualColumn("v1", "upper(region)", ColumnType.STRING, TestExprMacroTable.INSTANCE)
         ))
         .build();
-    try (CursorHolder holder = factory.makeCursorHolder(buildSpec)) {
-      Assertions.assertEquals(
-          List.of("US-EAST-1", "US-WEST-2", "EU-WEST-1"),
-          collectDimension(holder.asCursor(), "v1")
-      );
-    }
+    Assertions.assertEquals(
+        List.of("US-EAST-1", "US-WEST-2", "EU-WEST-1"),
+        collectDimension(buildSpec, "v1")
+    );
   }
 
   @Test
@@ -238,47 +231,34 @@ class QueryableIndexCursorFactoryClusteredTest extends InitializedNullHandlingTe
     // No-regression: query VC with no materialized equivalent (lower(region_upper)) is recomputed from the stored
     // region_upper column, not remapped.
     segmentIndex = buildVirtualClusteringSegment();
-    final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
-        segmentIndex,
-        QueryableIndexTimeBoundaryInspector.create(segmentIndex)
-    );
     final CursorBuildSpec buildSpec = CursorBuildSpec.builder()
         .setVirtualColumns(VirtualColumns.create(
             new ExpressionVirtualColumn("v2", "lower(region_upper)", ColumnType.STRING, TestExprMacroTable.INSTANCE)
         ))
         .build();
-    try (CursorHolder holder = factory.makeCursorHolder(buildSpec)) {
-      Assertions.assertEquals(
-          List.of("us-east-1", "us-west-2", "eu-west-1"),
-          collectDimension(holder.asCursor(), "v2")
-      );
-    }
+    Assertions.assertEquals(
+        List.of("us-east-1", "us-west-2", "eu-west-1"),
+        collectDimension(buildSpec, "v2")
+    );
   }
 
   @Test
   void testQueryVcShadowingClusteringColumnWinsOverConstantViaAsCursor()
   {
-    // A query VC named "tenant" shadows the clustering column of the same name (computed from region instead). The
-    // concat wrapper must NOT serve the per-group clustering constant for "tenant"; it must defer to the delegate,
-    // which resolves the query VC (virtual columns win over physical columns). Two groups + no time ordering => the
-    // concatenating path. Without the shadow guard, reads of "tenant" would return the clustering constant
+    // A query VC named "tenant" shadows the clustering column of the same name (computed from region instead). Each
+    // group's cursor must NOT serve its clustering constant for "tenant"; it must resolve the query VC (virtual columns
+    // win over physical columns). Without the shadow guard, reads of "tenant" would return the clustering constant
     // ("acme"/"globex") instead of upper(region).
     segmentIndex = standardTwoGroup();
-    final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
-        segmentIndex,
-        QueryableIndexTimeBoundaryInspector.create(segmentIndex)
-    );
     final CursorBuildSpec buildSpec = CursorBuildSpec.builder()
         .setVirtualColumns(VirtualColumns.create(
             new ExpressionVirtualColumn("tenant", "upper(region)", ColumnType.STRING, TestExprMacroTable.INSTANCE)
         ))
         .build();
-    try (CursorHolder holder = factory.makeCursorHolder(buildSpec)) {
-      Assertions.assertEquals(
-          List.of("US-EAST-1", "US-WEST-2", "EU-WEST-1"),
-          collectDimension(holder.asCursor(), "tenant")
-      );
-    }
+    Assertions.assertEquals(
+        List.of("US-EAST-1", "US-WEST-2", "EU-WEST-1"),
+        collectDimension(buildSpec, "tenant")
+    );
   }
 
   @Test
@@ -288,52 +268,35 @@ class QueryableIndexCursorFactoryClusteredTest extends InitializedNullHandlingTe
     // holder path's scalar remap wrap. The remap reads the materialized tenant_lower clustering constant instead of
     // recomputing lower(tenant) from the retained raw column.
     segmentIndex = buildVirtualClusteringSegment();
-    final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
-        segmentIndex,
-        QueryableIndexTimeBoundaryInspector.create(segmentIndex)
-    );
     final CursorBuildSpec buildSpec = CursorBuildSpec.builder()
         .setVirtualColumns(VirtualColumns.create(
             new ExpressionVirtualColumn("v0", "lower(tenant)", ColumnType.STRING, TestExprMacroTable.INSTANCE)
         ))
         .setFilter(new EqualityFilter("v0", ColumnType.STRING, "globex", null))
         .build();
-    try (CursorHolder holder = factory.makeCursorHolder(buildSpec)) {
+    try (CursorHolder holder = onlyViewFactory(buildSpec).makeCursorHolder(buildSpec)) {
       Assertions.assertEquals(List.of("globex"), collectDimension(holder.asCursor(), "v0"));
     }
   }
 
   @Test
-  void testEquivalentVcFilterPrunesToSingleGroupNotConcatenated()
+  void testEquivalentVcFilterPrunesToSingleGroup()
   {
     // A filter on the ORIGINAL expression used to build the clustering column (lower(tenant) = 'acme', planned as a
-    // query VC) must prune to the single matching cluster group and take the single-group cursor path -- NOT survive
-    // every group and post-filter through the ConcatenatingCursor.
+    // query VC) must prune to the single matching cluster group, so it is read with a single-group cursor.
     segmentIndex = buildVirtualClusteringSegment();
-    final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
-        segmentIndex,
-        QueryableIndexTimeBoundaryInspector.create(segmentIndex)
-    );
     final VirtualColumns queryVcs = VirtualColumns.create(
         new ExpressionVirtualColumn("v0", "lower(tenant)", ColumnType.STRING, TestExprMacroTable.INSTANCE)
     );
 
-    // Control: unfiltered -> both groups survive -> multi-group ConcatenatingCursor.
-    try (CursorHolder holder =
-             factory.makeCursorHolder(CursorBuildSpec.builder().setVirtualColumns(queryVcs).build())) {
-      Assertions.assertInstanceOf(ConcatenatingCursor.class, holder.asCursor());
-    }
-
     // Filtered on the equivalent VC -> the clustering leaf resolves to tenant_lower and folds, pruning to the single
-    // acme group -> single-group cursor (not a ConcatenatingCursor), and no residual filter on the missing raw column.
+    // acme group -> single-group cursor, and no residual filter on the missing raw column.
     final CursorBuildSpec buildSpec = CursorBuildSpec.builder()
         .setVirtualColumns(queryVcs)
         .setFilter(new EqualityFilter("v0", ColumnType.STRING, "acme", null))
         .build();
-    try (CursorHolder holder = factory.makeCursorHolder(buildSpec)) {
-      final Cursor cursor = holder.asCursor();
-      Assertions.assertFalse(cursor instanceof ConcatenatingCursor);
-      Assertions.assertEquals(List.of("us-east-1", "us-west-2"), collectDimension(cursor, "region"));
+    try (CursorHolder holder = onlyViewFactory(buildSpec).makeCursorHolder(buildSpec)) {
+      Assertions.assertEquals(List.of("us-east-1", "us-west-2"), collectDimension(holder.asCursor(), "region"));
     }
   }
 
@@ -345,10 +308,6 @@ class QueryableIndexCursorFactoryClusteredTest extends InitializedNullHandlingTe
     // filter is region = 'us-east-1', which references no remap key -- the remap rewrite must preserve it (identity
     // fallback) rather than throw for a column missing from {v0 -> tenant_lower}.
     segmentIndex = buildVirtualClusteringSegment();
-    final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
-        segmentIndex,
-        QueryableIndexTimeBoundaryInspector.create(segmentIndex)
-    );
     final CursorBuildSpec buildSpec = CursorBuildSpec.builder()
         .setVirtualColumns(VirtualColumns.create(
             new ExpressionVirtualColumn("v0", "lower(tenant)", ColumnType.STRING, TestExprMacroTable.INSTANCE)
@@ -358,11 +317,11 @@ class QueryableIndexCursorFactoryClusteredTest extends InitializedNullHandlingTe
             new EqualityFilter("region", ColumnType.STRING, "us-east-1", null)
         )))
         .build();
-    try (CursorHolder holder = factory.makeCursorHolder(buildSpec)) {
+    try (CursorHolder holder = onlyViewFactory(buildSpec).makeCursorHolder(buildSpec)) {
       // Only the Acme / us-east-1 row survives; v0 still resolves to the materialized tenant_lower clustering constant.
       Assertions.assertEquals(List.of("acme"), collectDimension(holder.asCursor(), "v0"));
     }
-    try (CursorHolder holder = factory.makeCursorHolder(buildSpec)) {
+    try (CursorHolder holder = onlyViewFactory(buildSpec).makeCursorHolder(buildSpec)) {
       Assertions.assertEquals(List.of("us-east-1"), collectDimension(holder.asCursor(), "region"));
     }
   }
@@ -375,10 +334,6 @@ class QueryableIndexCursorFactoryClusteredTest extends InitializedNullHandlingTe
     // AndFilter whose recursion hits the residual region leaf; the identity fallback must keep region as-is while
     // remapping v1 -> region_upper.
     segmentIndex = buildVirtualClusteringSegment();
-    final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
-        segmentIndex,
-        QueryableIndexTimeBoundaryInspector.create(segmentIndex)
-    );
     final CursorBuildSpec buildSpec = CursorBuildSpec.builder()
         .setVirtualColumns(VirtualColumns.create(
             new ExpressionVirtualColumn("v1", "upper(region)", ColumnType.STRING, TestExprMacroTable.INSTANCE)
@@ -388,9 +343,7 @@ class QueryableIndexCursorFactoryClusteredTest extends InitializedNullHandlingTe
             new EqualityFilter("region", ColumnType.STRING, "us-east-1", null)
         )))
         .build();
-    try (CursorHolder holder = factory.makeCursorHolder(buildSpec)) {
-      Assertions.assertEquals(List.of("us-east-1"), collectDimension(holder.asCursor(), "region"));
-    }
+    Assertions.assertEquals(List.of("us-east-1"), collectDimension(buildSpec, "region"));
   }
 
   @Test
@@ -400,19 +353,12 @@ class QueryableIndexCursorFactoryClusteredTest extends InitializedNullHandlingTe
     // vectorized read of v0 := lower(tenant) resolves to the materialized clustering column tenant_lower (instead of
     // recomputing lower(tenant) from the retained raw column), and the remap no longer forces the scalar path.
     segmentIndex = buildVirtualClusteringSegment();
-    final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
-        segmentIndex,
-        QueryableIndexTimeBoundaryInspector.create(segmentIndex)
-    );
     final CursorBuildSpec buildSpec = CursorBuildSpec.builder()
         .setVirtualColumns(VirtualColumns.create(
             new ExpressionVirtualColumn("v0", "lower(tenant)", ColumnType.STRING, TestExprMacroTable.INSTANCE)
         ))
         .build();
-    try (CursorHolder holder = factory.makeCursorHolder(buildSpec)) {
-      Assertions.assertTrue(holder.canVectorize());
-      Assertions.assertEquals(List.of("acme", "acme", "globex"), collectObjectVector(holder.asVectorCursor(), "v0"));
-    }
+    Assertions.assertEquals(List.of("acme", "acme", "globex"), collectObjectVector(buildSpec, "v0"));
   }
 
   @Test
@@ -420,22 +366,15 @@ class QueryableIndexCursorFactoryClusteredTest extends InitializedNullHandlingTe
   {
     // non-clustering: v1 := upper(region) resolves to the materialized region_upper physical column.
     segmentIndex = buildVirtualClusteringSegment();
-    final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
-        segmentIndex,
-        QueryableIndexTimeBoundaryInspector.create(segmentIndex)
-    );
     final CursorBuildSpec buildSpec = CursorBuildSpec.builder()
         .setVirtualColumns(VirtualColumns.create(
             new ExpressionVirtualColumn("v1", "upper(region)", ColumnType.STRING, TestExprMacroTable.INSTANCE)
         ))
         .build();
-    try (CursorHolder holder = factory.makeCursorHolder(buildSpec)) {
-      Assertions.assertTrue(holder.canVectorize());
-      Assertions.assertEquals(
-          List.of("US-EAST-1", "US-WEST-2", "EU-WEST-1"),
-          collectObjectVector(holder.asVectorCursor(), "v1")
-      );
-    }
+    Assertions.assertEquals(
+        List.of("US-EAST-1", "US-WEST-2", "EU-WEST-1"),
+        collectObjectVector(buildSpec, "v1")
+    );
   }
 
   @Test
@@ -444,17 +383,13 @@ class QueryableIndexCursorFactoryClusteredTest extends InitializedNullHandlingTe
     // single surviving group (filter on the equivalent VC prunes to one group): exercises the single-group holder's
     // vector remap wrap.
     segmentIndex = buildVirtualClusteringSegment();
-    final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
-        segmentIndex,
-        QueryableIndexTimeBoundaryInspector.create(segmentIndex)
-    );
     final CursorBuildSpec buildSpec = CursorBuildSpec.builder()
         .setVirtualColumns(VirtualColumns.create(
             new ExpressionVirtualColumn("v0", "lower(tenant)", ColumnType.STRING, TestExprMacroTable.INSTANCE)
         ))
         .setFilter(new EqualityFilter("v0", ColumnType.STRING, "globex", null))
         .build();
-    try (CursorHolder holder = factory.makeCursorHolder(buildSpec)) {
+    try (CursorHolder holder = onlyViewFactory(buildSpec).makeCursorHolder(buildSpec)) {
       Assertions.assertTrue(holder.canVectorize());
       Assertions.assertEquals(List.of("globex"), collectObjectVector(holder.asVectorCursor(), "v0"));
     }
@@ -519,38 +454,27 @@ class QueryableIndexCursorFactoryClusteredTest extends InitializedNullHandlingTe
   void testUnfilteredScanWalksAllGroupsAndInjectsClusteringConstants()
   {
     segmentIndex = standardTwoGroup();
-    final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
-        segmentIndex,
-        QueryableIndexTimeBoundaryInspector.create(segmentIndex)
+    final List<List<String>> rows = collectTenantRegionRows(CursorBuildSpec.FULL_SCAN);
+    // acme group rows come first (clustering-ascending order), then globex. Tenants injected per-group.
+    Assertions.assertEquals(
+        List.of(
+            List.of("acme", "us-east-1"),
+            List.of("acme", "us-west-2"),
+            List.of("globex", "eu-west-1")
+        ),
+        rows
     );
-
-    try (CursorHolder holder = factory.makeCursorHolder(CursorBuildSpec.FULL_SCAN)) {
-      final List<List<String>> rows = collectTenantRegionRows(holder.asCursor());
-      // acme group rows come first (clustering-ascending order), then globex. Tenants injected per-group.
-      Assertions.assertEquals(
-          List.of(
-              List.of("acme", "us-east-1"),
-              List.of("acme", "us-west-2"),
-              List.of("globex", "eu-west-1")
-          ),
-          rows
-      );
-    }
   }
 
   @Test
   void testFilterOnClusteringColumnPrunesNonMatchingGroups()
   {
     segmentIndex = standardTwoGroup();
-    final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
-        segmentIndex,
-        QueryableIndexTimeBoundaryInspector.create(segmentIndex)
-    );
 
     // tenant=acme — only the acme group survives the pruner. Its filter is rewritten to TRUE and dropped, so the
     // per-group QueryableIndex never sees a leaf referencing "tenant" (which it doesn't physically carry).
     final Filter filter = new EqualityFilter("tenant", ColumnType.STRING, "acme", null);
-    try (CursorHolder holder = factory.makeCursorHolder(specWith(filter))) {
+    try (CursorHolder holder = onlyViewFactory(specWith(filter)).makeCursorHolder(specWith(filter))) {
       final List<List<String>> rows = collectTenantRegionRows(holder.asCursor());
       Assertions.assertEquals(
           List.of(
@@ -566,37 +490,26 @@ class QueryableIndexCursorFactoryClusteredTest extends InitializedNullHandlingTe
   void testRangeFilterOnClusteringColumnMatchesViaFabricatedColumn()
   {
     segmentIndex = standardTwoGroup();
-    final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
-        segmentIndex,
-        QueryableIndexTimeBoundaryInspector.create(segmentIndex)
-    );
-
     // A RangeFilter on the clustering column is NOT folded by the pruner (only Equality/In/Null fold), so it survives
     // to the per-group cursor. Clustering columns are constant-per-group and not stored on disk, so before the
     // per-group index fabricated them as constant columns this returned nothing; now the range resolves against the
     // fabricated column's value matcher and both groups (tenant in [a, z]) match all rows.
     final Filter filter = new RangeFilter("tenant", ColumnType.STRING, "a", "z", false, false, null);
-    try (CursorHolder holder = factory.makeCursorHolder(specWith(filter))) {
-      final List<List<String>> rows = collectTenantRegionRows(holder.asCursor());
-      Assertions.assertEquals(
-          List.of(
-              List.of("acme", "us-east-1"),
-              List.of("acme", "us-west-2"),
-              List.of("globex", "eu-west-1")
-          ),
-          rows
-      );
-    }
+    final List<List<String>> rows = collectTenantRegionRows(specWith(filter));
+    Assertions.assertEquals(
+        List.of(
+            List.of("acme", "us-east-1"),
+            List.of("acme", "us-west-2"),
+            List.of("globex", "eu-west-1")
+        ),
+        rows
+    );
   }
 
   @Test
   void testResidualRangeFilterOnClusteringColumnSingleGroup()
   {
     segmentIndex = standardTwoGroup();
-    final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
-        segmentIndex,
-        QueryableIndexTimeBoundaryInspector.create(segmentIndex)
-    );
 
     // tenant = 'acme' folds and prunes to the single acme group; the RangeFilter on the clustering column survives as
     // a residual leaf on the single-group cursor. It must match against the fabricated constant column ('acme' is in
@@ -605,7 +518,7 @@ class QueryableIndexCursorFactoryClusteredTest extends InitializedNullHandlingTe
         new EqualityFilter("tenant", ColumnType.STRING, "acme", null),
         new RangeFilter("tenant", ColumnType.STRING, "a", "m", false, false, null)
     ));
-    try (CursorHolder holder = factory.makeCursorHolder(specWith(filter))) {
+    try (CursorHolder holder = onlyViewFactory(specWith(filter)).makeCursorHolder(specWith(filter))) {
       final List<List<String>> rows = collectTenantRegionRows(holder.asCursor());
       Assertions.assertEquals(
           List.of(
@@ -625,24 +538,21 @@ class QueryableIndexCursorFactoryClusteredTest extends InitializedNullHandlingTe
     // groups reporting clustering-first) based purely on filter selectivity. Both must report the full segment
     // ordering [tenant ASC, region ASC, __time ASC], which is clustering-first (not time-first).
     segmentIndex = standardTwoGroup();
-    final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
-        segmentIndex,
-        QueryableIndexTimeBoundaryInspector.create(segmentIndex)
-    );
 
     final List<OrderBy> expected = segmentIndex.getClusteredBaseSummary().getOrdering();
     Assertions.assertEquals(ColumnHolder.TIME_COLUMN_NAME, expected.get(expected.size() - 1).getColumnName());
     Assertions.assertNotEquals(ColumnHolder.TIME_COLUMN_NAME, expected.get(0).getColumnName());
 
     // Single surviving group (tenant=acme).
-    try (CursorHolder single = factory.makeCursorHolder(
-        specWith(new EqualityFilter("tenant", ColumnType.STRING, "acme", null))
-    )) {
+    final CursorBuildSpec singleGroupSpec = specWith(new EqualityFilter("tenant", ColumnType.STRING, "acme", null));
+    try (CursorHolder single = onlyViewFactory(singleGroupSpec).makeCursorHolder(singleGroupSpec)) {
       Assertions.assertEquals(expected, single.getOrdering());
     }
-    // Multiple surviving groups (full scan).
-    try (CursorHolder multi = factory.makeCursorHolder(CursorBuildSpec.FULL_SCAN)) {
-      Assertions.assertEquals(expected, multi.getOrdering());
+    // Multiple surviving groups (full scan), each read separately.
+    for (CursorFactory groupFactory : groupFactories()) {
+      try (CursorHolder multi = groupFactory.makeCursorHolder(CursorBuildSpec.FULL_SCAN)) {
+        Assertions.assertEquals(expected, multi.getOrdering());
+      }
     }
   }
 
@@ -653,10 +563,6 @@ class QueryableIndexCursorFactoryClusteredTest extends InitializedNullHandlingTe
     // column and dropped from each group's spec. It still shadows the stored "tenant", so the ordering must end before
     // it, whether one group survives or many.
     segmentIndex = buildVirtualClusteringSegment();
-    final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
-        segmentIndex,
-        QueryableIndexTimeBoundaryInspector.create(segmentIndex)
-    );
 
     final List<OrderBy> segmentOrdering = segmentIndex.getClusteredBaseSummary().getOrdering();
     Assertions.assertEquals("tenant", segmentOrdering.get(1).getColumnName());
@@ -666,19 +572,21 @@ class QueryableIndexCursorFactoryClusteredTest extends InitializedNullHandlingTe
     );
 
     // Single surviving group.
-    try (CursorHolder single = factory.makeCursorHolder(
+    final CursorBuildSpec singleGroupSpec =
         CursorBuildSpec.builder()
                        .setVirtualColumns(virtualColumns)
                        .setFilter(new EqualityFilter("tenant_lower", ColumnType.STRING, "acme", null))
-                       .build()
-    )) {
+                       .build();
+    try (CursorHolder single = onlyViewFactory(singleGroupSpec).makeCursorHolder(singleGroupSpec)) {
       Assertions.assertEquals(segmentOrdering.subList(0, 1), single.getOrdering());
     }
-    // Multiple surviving groups.
-    try (CursorHolder multi = factory.makeCursorHolder(
-        CursorBuildSpec.builder().setVirtualColumns(virtualColumns).build()
-    )) {
-      Assertions.assertEquals(segmentOrdering.subList(0, 1), multi.getOrdering());
+    // Multiple surviving groups, each read separately.
+    for (CursorFactory groupFactory : groupFactories()) {
+      try (CursorHolder multi = groupFactory.makeCursorHolder(
+          CursorBuildSpec.builder().setVirtualColumns(virtualColumns).build()
+      )) {
+        Assertions.assertEquals(segmentOrdering.subList(0, 1), multi.getOrdering());
+      }
     }
   }
 
@@ -686,36 +594,26 @@ class QueryableIndexCursorFactoryClusteredTest extends InitializedNullHandlingTe
   void testFilterOnNonClusteringColumnRunsBitmapOnEverySurvivingGroup()
   {
     segmentIndex = standardTwoGroup();
-    final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
-        segmentIndex,
-        QueryableIndexTimeBoundaryInspector.create(segmentIndex)
-    );
-
     // region=us-east-1 — pruner keeps both groups (filter references non-clustering data → UNKNOWN); rewriter
     // leaves the leaf untouched; per-group QueryableIndex's bitmap index drives row selection. Only the acme group
     // has a us-east-1 row.
     final Filter filter = new EqualityFilter("region", ColumnType.STRING, "us-east-1", null);
-    try (CursorHolder holder = factory.makeCursorHolder(specWith(filter))) {
-      final List<List<String>> rows = collectTenantRegionRows(holder.asCursor());
-      Assertions.assertEquals(List.of(List.of("acme", "us-east-1")), rows);
-    }
+    final List<List<String>> rows = collectTenantRegionRows(specWith(filter));
+    Assertions.assertEquals(List.of(List.of("acme", "us-east-1")), rows);
   }
 
   @Test
   void testMixedAndFilterPrunesByClusteringAndBitmapsTheRest()
   {
     segmentIndex = standardTwoGroup();
-    final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
-        segmentIndex,
-        QueryableIndexTimeBoundaryInspector.create(segmentIndex)
-    );
 
     // tenant=acme AND region=us-west-2 — pruner keeps acme only (clustering leaf TRUE on acme, FALSE on globex);
     // rewriter folds the clustering TRUE out of the AND, leaving just `region=us-west-2` for the per-group bitmap.
     final LinkedHashSet<Filter> children = new LinkedHashSet<>();
     children.add(new EqualityFilter("tenant", ColumnType.STRING, "acme", null));
     children.add(new EqualityFilter("region", ColumnType.STRING, "us-west-2", null));
-    try (CursorHolder holder = factory.makeCursorHolder(specWith(new AndFilter(children)))) {
+    final CursorBuildSpec spec = specWith(new AndFilter(children));
+    try (CursorHolder holder = onlyViewFactory(spec).makeCursorHolder(spec)) {
       final List<List<String>> rows = collectTenantRegionRows(holder.asCursor());
       Assertions.assertEquals(List.of(List.of("acme", "us-west-2")), rows);
     }
@@ -746,41 +644,42 @@ class QueryableIndexCursorFactoryClusteredTest extends InitializedNullHandlingTe
   }
 
   @Test
-  void testMultiGroupCanVectorizeAccountsForEveryGroupRewrite()
+  void testCanVectorizeAccountsForEachGroupRewrite()
   {
     segmentIndex = standardTwoGroup();
-    final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
-        segmentIndex,
-        QueryableIndexTimeBoundaryInspector.create(segmentIndex)
-    );
 
     // OR(tenant=acme, nonVectorizable(region=us-east-1)) — both groups survive (UNKNOWN keeps globex), but the
     // rewrites differ: acme folds to TRUE (null filter, trivially vectorizable) while globex keeps the
-    // non-vectorizable residual leaf. The combined holder must NOT report canVectorize even though the first
-    // group's holder would, otherwise the engine picks the vector path and the later group blows up.
+    // non-vectorizable residual leaf. Each group's holder must report canVectorize for its own rewrite.
     final LinkedHashSet<Filter> children = new LinkedHashSet<>();
     children.add(new EqualityFilter("tenant", ColumnType.STRING, "acme", null));
     children.add(new NonVectorizableFilter(new EqualityFilter("region", ColumnType.STRING, "us-east-1", null)));
-    try (CursorHolder holder = factory.makeCursorHolder(specWith(new OrFilter(children)))) {
-      Assertions.assertFalse(holder.canVectorize());
-      // The non-vector path still works and only acme rows + the matching globex row would pass the residual; the
-      // acme group's TRUE rewrite keeps all of its rows.
-      final List<List<String>> rows = collectTenantRegionRows(holder.asCursor());
-      Assertions.assertEquals(
-          List.of(
-              List.of("acme", "us-east-1"),
-              List.of("acme", "us-west-2")
-          ),
-          rows
-      );
+    final CursorBuildSpec spec = specWith(new OrFilter(children));
+    final List<CursorFactory> groupFactories = groupFactories();
+    Assertions.assertEquals(2, groupFactories.size());
+    try (CursorHolder acmeHolder = groupFactories.get(0).makeCursorHolder(spec);
+         CursorHolder globexHolder = groupFactories.get(1).makeCursorHolder(spec)) {
+      Assertions.assertTrue(acmeHolder.canVectorize());
+      Assertions.assertFalse(globexHolder.canVectorize());
     }
 
-    // Control: the same shape with a vectorizable residual leaf keeps the vector path available.
+    // The acme group's TRUE rewrite keeps all of its rows, and the globex group has no us-east-1 row.
+    Assertions.assertEquals(
+        List.of(
+            List.of("acme", "us-east-1"),
+            List.of("acme", "us-west-2")
+        ),
+        collectTenantRegionRows(spec)
+    );
+
+    // Control: the same shape with a vectorizable residual leaf keeps the vector path available in every group.
     final LinkedHashSet<Filter> vectorizableChildren = new LinkedHashSet<>();
     vectorizableChildren.add(new EqualityFilter("tenant", ColumnType.STRING, "acme", null));
     vectorizableChildren.add(new EqualityFilter("region", ColumnType.STRING, "us-east-1", null));
-    try (CursorHolder holder = factory.makeCursorHolder(specWith(new OrFilter(vectorizableChildren)))) {
-      Assertions.assertTrue(holder.canVectorize());
+    for (CursorFactory groupFactory : groupFactories) {
+      try (CursorHolder holder = groupFactory.makeCursorHolder(specWith(new OrFilter(vectorizableChildren)))) {
+        Assertions.assertTrue(holder.canVectorize());
+      }
     }
   }
 
@@ -827,18 +726,53 @@ class QueryableIndexCursorFactoryClusteredTest extends InitializedNullHandlingTe
   }
 
   @Test
-  void testSingleGroupMatchUsesSingleGroupCursorHolderPath()
+  void testWholeSegmentFactoryRefusesSegmentWithSeveralGroups()
   {
+    // A cursor cannot span cluster groups, so the whole segment's factory refuses to build cursors over a segment with
+    // several groups, even if the filter leaves only one. That way, callers that do not read one view per group fail
+    // regardless of their filters. A filter that leaves no groups is allowed, since its cursor reads nothing.
     segmentIndex = standardTwoGroup();
     final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
         segmentIndex,
         QueryableIndexTimeBoundaryInspector.create(segmentIndex)
     );
+    Assertions.assertThrows(DruidException.class, () -> factory.makeCursorHolder(CursorBuildSpec.FULL_SCAN));
+    final CursorBuildSpec oneGroupSpec = specWith(new EqualityFilter("tenant", ColumnType.STRING, "acme", null));
+    Assertions.assertThrows(DruidException.class, () -> factory.makeCursorHolder(oneGroupSpec));
+    final CursorBuildSpec noGroupSpec = specWith(new EqualityFilter("tenant", ColumnType.STRING, "initech", null));
+    try (CursorHolder holder = factory.makeCursorHolder(noGroupSpec)) {
+      Assertions.assertTrue(holder.asCursor().isDone());
+    }
+  }
+
+  @Test
+  void testWholeSegmentFactoryReadsSegmentWithOneGroup()
+  {
+    segmentIndex = buildSegment(List.of(
+        row("acme", "2025-01-01T00:00:00", "us-east-1"),
+        row("acme", "2025-01-01T01:00:00", "us-west-2")
+    ));
+    final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
+        segmentIndex,
+        QueryableIndexTimeBoundaryInspector.create(segmentIndex)
+    );
+    try (CursorHolder holder = factory.makeCursorHolder(CursorBuildSpec.FULL_SCAN)) {
+      Assertions.assertEquals(
+          List.of(List.of("acme", "us-east-1"), List.of("acme", "us-west-2")),
+          collectTenantRegionRows(holder.asCursor())
+      );
+    }
+  }
+
+  @Test
+  void testSingleGroupMatchUsesSingleGroupCursorHolderPath()
+  {
+    segmentIndex = standardTwoGroup();
 
     // tenant IN ('globex') matches a single group → single-group cursor-holder path. Filter rewriter still folds
     // the leaf to TRUE for the surviving group, and the cursor injects tenant=globex via the selector wrapper.
     final Filter filter = new TypedInFilter("tenant", ColumnType.STRING, List.of("globex"), null, null);
-    try (CursorHolder holder = factory.makeCursorHolder(specWith(filter))) {
+    try (CursorHolder holder = onlyViewFactory(specWith(filter)).makeCursorHolder(specWith(filter))) {
       Assertions.assertEquals(
           List.of(List.of("globex", "eu-west-1")),
           collectTenantRegionRows(holder.asCursor())
@@ -850,37 +784,26 @@ class QueryableIndexCursorFactoryClusteredTest extends InitializedNullHandlingTe
   void testMultiGroupTypedInFilterKeepsBothGroups()
   {
     segmentIndex = standardTwoGroup();
-    final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
-        segmentIndex,
-        QueryableIndexTimeBoundaryInspector.create(segmentIndex)
-    );
-
-    // tenant IN ('acme', 'globex') → both groups survive, full concatenated walk.
+    // tenant IN ('acme', 'globex') → both groups survive, and each is read in full.
     final Filter filter = new TypedInFilter("tenant", ColumnType.STRING, List.of("acme", "globex"), null, null);
-    try (CursorHolder holder = factory.makeCursorHolder(specWith(filter))) {
-      Assertions.assertEquals(
-          List.of(
-              List.of("acme", "us-east-1"),
-              List.of("acme", "us-west-2"),
-              List.of("globex", "eu-west-1")
-          ),
-          collectTenantRegionRows(holder.asCursor())
-      );
-    }
+    Assertions.assertEquals(
+        List.of(
+            List.of("acme", "us-east-1"),
+            List.of("acme", "us-west-2"),
+            List.of("globex", "eu-west-1")
+        ),
+        collectTenantRegionRows(specWith(filter))
+    );
   }
 
   @Test
   void testTimeseriesCountAcrossClusterGroups()
   {
     segmentIndex = standardTwoGroup();
-    final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
-        segmentIndex,
-        QueryableIndexTimeBoundaryInspector.create(segmentIndex)
-    );
 
-    // No filter — both groups walked; aggregator must accumulate count across the group transition.
+    // No filter — both groups walked; counts from each group must merge into one bucket.
     final TimeseriesQuery query = newTimeseries().build();
-    final List<Result<TimeseriesResultValue>> results = timeseriesEngine.process(query, factory, null, null).toList();
+    final List<Result<TimeseriesResultValue>> results = runTimeseries(query);
     Assertions.assertEquals(1, results.size());
     Assertions.assertEquals(3L, results.get(0).getValue().getLongMetric("count").longValue());
   }
@@ -889,16 +812,12 @@ class QueryableIndexCursorFactoryClusteredTest extends InitializedNullHandlingTe
   void testTimeseriesCountWithClusteringFilter()
   {
     segmentIndex = standardTwoGroup();
-    final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
-        segmentIndex,
-        QueryableIndexTimeBoundaryInspector.create(segmentIndex)
-    );
 
     // tenant=acme — only the acme group survives pruning; count should be 2.
-    final TimeseriesQuery query = newTimeseries()
-        .filters(new EqualityFilter("tenant", ColumnType.STRING, "acme", null))
-        .build();
-    final List<Result<TimeseriesResultValue>> results = timeseriesEngine.process(query, factory, null, null).toList();
+    final EqualityFilter filter = new EqualityFilter("tenant", ColumnType.STRING, "acme", null);
+    final TimeseriesQuery query = newTimeseries().filters(filter).build();
+    final List<Result<TimeseriesResultValue>> results =
+        timeseriesEngine.process(query, onlyViewFactory(specWith(filter)), null, null).toList();
     Assertions.assertEquals(1, results.size());
     Assertions.assertEquals(2L, results.get(0).getValue().getLongMetric("count").longValue());
   }
@@ -907,10 +826,6 @@ class QueryableIndexCursorFactoryClusteredTest extends InitializedNullHandlingTe
   void testGroupByOnClusteringColumnAcrossGroups()
   {
     segmentIndex = standardTwoGroup();
-    final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
-        segmentIndex,
-        QueryableIndexTimeBoundaryInspector.create(segmentIndex)
-    );
 
     // GROUP BY tenant — one bucket per surviving group; exercises the injected constant clustering selector under
     // the grouping engine's selector-holding hot loop.
@@ -922,7 +837,7 @@ class QueryableIndexCursorFactoryClusteredTest extends InitializedNullHandlingTe
                                            .addOrderByColumn("tenant")
                                            .setAggregatorSpecs(new CountAggregatorFactory("count"))
                                            .build();
-    final List<ResultRow> results = groupingEngine.process(query, factory, null, nonBlockingPool, null).toList();
+    final List<ResultRow> results = runGroupBy(query);
     Assertions.assertEquals(2, results.size());
     // ResultRow layout for a GroupBy with one dim + one agg: [dim0, agg0]
     Assertions.assertEquals("acme", results.get(0).get(0));
@@ -934,18 +849,13 @@ class QueryableIndexCursorFactoryClusteredTest extends InitializedNullHandlingTe
   @Test
   void testGroupByOnNonClusteringColumnRollsAcrossGroups()
   {
-    // Three groups that share a region value, so the GroupBy on `region` must roll matching rows across cluster
-    // group transitions into the same bucket — proving the grouping engine's selector identity survives the
-    // wrapper-factory's setDelegate transitions and the hash bucket isn't accidentally segmented per group.
+    // Groups that share a region value, so the GroupBy on `region` must merge matching rows from each cluster group
+    // into the same bucket.
     segmentIndex = buildSegment(List.of(
         row("acme", "2025-01-01T00:00:00", "us-east-1"),
         row("acme", "2025-01-01T00:30:00", "us-east-1"),
         row("globex", "2025-01-01T01:00:00", "us-east-1")
     ));
-    final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
-        segmentIndex,
-        QueryableIndexTimeBoundaryInspector.create(segmentIndex)
-    );
 
     final GroupByQuery query = GroupByQuery.builder()
                                            .setDataSource("test")
@@ -954,7 +864,7 @@ class QueryableIndexCursorFactoryClusteredTest extends InitializedNullHandlingTe
                                            .addDimension("region")
                                            .setAggregatorSpecs(new CountAggregatorFactory("count"))
                                            .build();
-    final List<ResultRow> results = groupingEngine.process(query, factory, null, nonBlockingPool, null).toList();
+    final List<ResultRow> results = runGroupBy(query);
     Assertions.assertEquals(1, results.size());
     Assertions.assertEquals("us-east-1", results.get(0).get(0));
     Assertions.assertEquals(3L, ((Number) results.get(0).get(1)).longValue());
@@ -972,21 +882,19 @@ class QueryableIndexCursorFactoryClusteredTest extends InitializedNullHandlingTe
         row("acme", "2025-01-01T01:00:00", "us-west-2"),
         row("globex", "2025-01-01T00:30:00", "eu-west-1")
     ));
-    final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
-        segmentIndex,
-        QueryableIndexTimeBoundaryInspector.create(segmentIndex)
-    );
 
+    final EqualityFilter filter = new EqualityFilter("tenant", ColumnType.STRING, "acme", null);
     final GroupByQuery query = GroupByQuery.builder()
                                            .setDataSource("test")
                                            .setGranularity(Granularities.ALL)
                                            .setInterval(Intervals.ETERNITY)
-                                           .setDimFilter(new EqualityFilter("tenant", ColumnType.STRING, "acme", null))
+                                           .setDimFilter(filter)
                                            .addDimension("region")
                                            .addOrderByColumn("region")
                                            .setAggregatorSpecs(new CountAggregatorFactory("count"))
                                            .build();
-    final List<ResultRow> results = groupingEngine.process(query, factory, null, nonBlockingPool, null).toList();
+    final List<ResultRow> results =
+        groupingEngine.process(query, onlyViewFactory(specWith(filter)), null, nonBlockingPool, null).toList();
     Assertions.assertEquals(2, results.size());
     Assertions.assertEquals("us-east-1", results.get(0).get(0));
     Assertions.assertEquals(2L, ((Number) results.get(0).get(1)).longValue());
@@ -1001,19 +909,17 @@ class QueryableIndexCursorFactoryClusteredTest extends InitializedNullHandlingTe
     // clustering column as a one-entry dictionary, so this rides the dictionary-id grouping path over the constant
     // clustering selector: one bucket, the constant value, full count.
     segmentIndex = standardTwoGroup();
-    final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
-        segmentIndex,
-        QueryableIndexTimeBoundaryInspector.create(segmentIndex)
-    );
+    final EqualityFilter filter = new EqualityFilter("tenant", ColumnType.STRING, "acme", null);
     final GroupByQuery query = GroupByQuery.builder()
                                            .setDataSource("test")
                                            .setGranularity(Granularities.ALL)
                                            .setInterval(Intervals.ETERNITY)
-                                           .setDimFilter(new EqualityFilter("tenant", ColumnType.STRING, "acme", null))
+                                           .setDimFilter(filter)
                                            .addDimension("tenant")
                                            .setAggregatorSpecs(new CountAggregatorFactory("count"))
                                            .build();
-    final List<ResultRow> results = groupingEngine.process(query, factory, null, nonBlockingPool, null).toList();
+    final List<ResultRow> results =
+        groupingEngine.process(query, onlyViewFactory(specWith(filter)), null, nonBlockingPool, null).toList();
     Assertions.assertEquals(1, results.size());
     Assertions.assertEquals("acme", results.get(0).get(0));
     Assertions.assertEquals(2L, ((Number) results.get(0).get(1)).longValue());
@@ -1060,10 +966,6 @@ class QueryableIndexCursorFactoryClusteredTest extends InitializedNullHandlingTe
   private void assertGroupByNullableLong(List<InputRow> rows, Map<Long, Long> expected)
   {
     segmentIndex = buildSegment(NULLABLE_LONG_CLUSTER_SPEC, rows);
-    final QueryableIndexCursorFactory factory = new QueryableIndexCursorFactory(
-        segmentIndex,
-        QueryableIndexTimeBoundaryInspector.create(segmentIndex)
-    );
 
     for (QueryContexts.Vectorize vectorize : List.of(QueryContexts.Vectorize.FALSE, QueryContexts.Vectorize.FORCE)) {
       final GroupByQuery query = GroupByQuery.builder()
@@ -1075,7 +977,7 @@ class QueryableIndexCursorFactoryClusteredTest extends InitializedNullHandlingTe
                                              .setContext(QueryContext.ofMap(QueryContextParameters.VECTORIZE, vectorize))
                                              .build();
       final Map<Long, Long> counts = new HashMap<>();
-      for (ResultRow row : groupingEngine.process(query, factory, null, nonBlockingPool, null).toList()) {
+      for (ResultRow row : runGroupBy(query)) {
         counts.put((Long) row.get(0), ((Number) row.get(1)).longValue());
       }
       Assertions.assertEquals(expected, counts, "vectorize=" + vectorize);
@@ -1162,6 +1064,119 @@ class QueryableIndexCursorFactoryClusteredTest extends InitializedNullHandlingTe
                  .granularity(Granularities.ALL)
                  .intervals(List.of(Intervals.ETERNITY))
                  .aggregators(new CountAggregatorFactory("count"));
+  }
+
+  /**
+   * Returns the factories for each cluster group of {@link #segmentIndex}, in clustering order. Segment walkers read
+   * clustered segments one group at a time, since a cursor cannot span groups.
+   */
+  private List<CursorFactory> groupFactories()
+  {
+    return SegmentViewTestUtil.viewCursorFactories(segmentIndex);
+  }
+
+  /**
+   * Returns the factory of the only view of {@link #segmentIndex} for {@code spec}, which must rule out all but one
+   * cluster group. The whole segment's factory refuses to build cursors over a segment with several groups, even if a
+   * filter leaves only one, so a single group is read through its view.
+   */
+  private CursorFactory onlyViewFactory(CursorBuildSpec spec)
+  {
+    final List<Segment> views = SegmentViewTestUtil.residentViews(segment(), spec);
+    Assertions.assertEquals(1, views.size());
+    return views.get(0).as(CursorFactory.class);
+  }
+
+  private Segment segment()
+  {
+    return new QueryableIndexSegment(segmentIndex, SegmentId.dummy("test"));
+  }
+
+  /**
+   * Reads {@code column} from every cluster group of {@link #segmentIndex}; see {@link #groupFactories()}.
+   */
+  private List<String> collectDimension(CursorBuildSpec spec, String column)
+  {
+    final List<String> out = new ArrayList<>();
+    for (CursorFactory groupFactory : groupFactories()) {
+      try (CursorHolder holder = groupFactory.makeCursorHolder(spec)) {
+        out.addAll(collectDimension(holder.asCursor(), column));
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Reads {@code column} from every cluster group of {@link #segmentIndex} using vector cursors, checking that each
+   * group's cursor can vectorize; see {@link #groupFactories()}.
+   */
+  private List<String> collectObjectVector(CursorBuildSpec spec, String column)
+  {
+    final List<String> out = new ArrayList<>();
+    for (CursorFactory groupFactory : groupFactories()) {
+      try (CursorHolder holder = groupFactory.makeCursorHolder(spec)) {
+        Assertions.assertTrue(holder.canVectorize());
+        out.addAll(collectObjectVector(holder.asVectorCursor(), column));
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Reads the (tenant, region) pairs from every cluster group of {@link #segmentIndex}; see {@link #groupFactories()}.
+   */
+  private List<List<String>> collectTenantRegionRows(CursorBuildSpec spec)
+  {
+    final List<List<String>> out = new ArrayList<>();
+    for (CursorFactory groupFactory : groupFactories()) {
+      try (CursorHolder holder = groupFactory.makeCursorHolder(spec)) {
+        out.addAll(collectTenantRegionRows(holder.asCursor()));
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Runs {@code query} on every cluster group of {@link #segmentIndex}, and merges the results the way results of
+   * separate segments are merged.
+   */
+  private List<ResultRow> runGroupBy(GroupByQuery query)
+  {
+    final List<ResultRow> rows = new ArrayList<>();
+    for (CursorFactory groupFactory : groupFactories()) {
+      rows.addAll(groupingEngine.process(query, groupFactory, null, nonBlockingPool, null).toList());
+    }
+    return mergeSorted(rows, groupingEngine.createResultComparator(query), groupingEngine.createMergeFn(query));
+  }
+
+  /**
+   * Runs {@code query} on every cluster group of {@link #segmentIndex}, and merges the results the way results of
+   * separate segments are merged.
+   */
+  private List<Result<TimeseriesResultValue>> runTimeseries(TimeseriesQuery query)
+  {
+    final List<Result<TimeseriesResultValue>> rows = new ArrayList<>();
+    for (CursorFactory groupFactory : groupFactories()) {
+      rows.addAll(timeseriesEngine.process(query, groupFactory, null, null).toList());
+    }
+    final TimeseriesQueryQueryToolChest toolChest = new TimeseriesQueryQueryToolChest();
+    return mergeSorted(rows, toolChest.createResultComparator(query), toolChest.createMergeFn(query));
+  }
+
+  private static <T> List<T> mergeSorted(List<T> rows, Comparator<T> comparator, BinaryOperator<T> mergeFn)
+  {
+    final List<T> sorted = new ArrayList<>(rows);
+    sorted.sort(comparator);
+    final List<T> merged = new ArrayList<>();
+    for (T row : sorted) {
+      final int last = merged.size() - 1;
+      if (last >= 0 && comparator.compare(merged.get(last), row) == 0) {
+        merged.set(last, mergeFn.apply(merged.get(last), row));
+      } else {
+        merged.add(row);
+      }
+    }
+    return merged;
   }
 
   private static List<String> collectDimension(Cursor cursor, String column)

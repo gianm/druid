@@ -46,6 +46,15 @@ public class FilteredSegment extends WrappedSegment
       return (T) new FilteredCursorFactory(delegate.as(CursorFactory.class), filter);
     } else if (TopNOptimizationInspector.class.equals(clazz)) {
       return (T) new SimpleTopNOptimizationInspector(filter == null);
+    } else if (SegmentViewFetcher.class.equals(clazz)) {
+      final SegmentViewFetcher fetcher = delegate.as(SegmentViewFetcher.class);
+      if (fetcher != null) {
+        return (T) SegmentViewFetcher.wrap(
+            fetcher,
+            new FilteredCursorFactory(delegate.as(CursorFactory.class), filter)::delegateSpec,
+            view -> new FilteredSegment(view, filter)
+        );
+      }
     }
     return null;
   }

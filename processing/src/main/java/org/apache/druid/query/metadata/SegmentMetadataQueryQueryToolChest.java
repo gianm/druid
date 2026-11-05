@@ -158,7 +158,8 @@ public class SegmentMetadataQueryQueryToolChest extends QueryToolChest<SegmentAn
       return Comparators.alwaysEqual();
     }
 
-    return segmentMetadataQuery.getResultOrdering(); // No two elements should be equal, so it should never merge
+    // Only analyses of the same segment, such as those of its hydrants or cluster groups, are equal, so only those merge
+    return segmentMetadataQuery.getResultOrdering();
   }
 
   @Override
@@ -469,6 +470,45 @@ public class SegmentMetadataQueryQueryToolChest extends QueryToolChest<SegmentAn
         queryGranularity,
         rollup
     );
+  }
+
+  /**
+   * Merges analyses of a clustered segment from two disjoint sets of its cluster groups, which are analyzed separately.
+   * Unlike {@link #mergeAnalyses}, which merges analyses of different data, this combines columns using
+   * {@link ColumnAnalysis#foldClusterGroups}, and takes segment-level metadata, such as intervals, aggregators, and
+   * projections, from one analysis, since every group reports the same metadata.
+   */
+  public static SegmentAnalysis mergeClusterGroupAnalyses(SegmentAnalysis arg1, SegmentAnalysis arg2)
+  {
+    final Map<String, ColumnAnalysis> rightColumns = arg2.getColumns();
+    final LinkedHashMap<String, ColumnAnalysis> columns = new LinkedHashMap<>();
+    for (Map.Entry<String, ColumnAnalysis> entry : arg1.getColumns().entrySet()) {
+      columns.put(entry.getKey(), entry.getValue().foldClusterGroups(rightColumns.get(entry.getKey())));
+    }
+    for (Map.Entry<String, ColumnAnalysis> entry : rightColumns.entrySet()) {
+      if (!columns.containsKey(entry.getKey())) {
+        columns.put(entry.getKey(), entry.getValue().foldClusterGroups(null));
+      }
+    }
+
+    return new SegmentAnalysis(
+        arg1.getId(),
+        firstNonNull(arg1.getIntervals(), arg2.getIntervals()),
+        columns,
+        arg1.getSize() + arg2.getSize(),
+        arg1.getNumRows() + arg2.getNumRows(),
+        firstNonNull(arg1.getAggregators(), arg2.getAggregators()),
+        firstNonNull(arg1.getProjections(), arg2.getProjections()),
+        firstNonNull(arg1.getTimestampSpec(), arg2.getTimestampSpec()),
+        firstNonNull(arg1.getQueryGranularity(), arg2.getQueryGranularity()),
+        firstNonNull(arg1.isRollup(), arg2.isRollup())
+    );
+  }
+
+  @Nullable
+  private static <T> T firstNonNull(@Nullable T a, @Nullable T b)
+  {
+    return a != null ? a : b;
   }
 
   @VisibleForTesting

@@ -27,6 +27,7 @@ import org.apache.druid.query.rowsandcols.CursorFactoryRowsAndColumns;
 import org.apache.druid.segment.CloseableShapeshifter;
 import org.apache.druid.segment.CursorFactory;
 import org.apache.druid.segment.Segment;
+import org.apache.druid.segment.SegmentViewFetcher;
 import org.apache.druid.segment.SimpleTopNOptimizationInspector;
 import org.apache.druid.segment.TimeBoundaryInspector;
 import org.apache.druid.segment.TopNOptimizationInspector;
@@ -110,6 +111,18 @@ public class HashJoinSegment implements Segment
           baseFilter,
           clauses,
           joinFilterPreAnalysis
+      );
+    } else if (SegmentViewFetcher.class.equals(clazz)) {
+      final SegmentViewFetcher fetcher = baseSegment.as(SegmentViewFetcher.class);
+      if (fetcher == null) {
+        return null;
+      }
+      final HashJoinSegmentCursorFactory cursorFactory = (HashJoinSegmentCursorFactory) as(CursorFactory.class);
+      // Views share the right-hand side references of this segment, which outlives them.
+      return (T) SegmentViewFetcher.wrap(
+          fetcher,
+          cursorFactory::delegateSpec,
+          view -> new HashJoinSegment(view, baseFilter, clauses, joinFilterPreAnalysis, () -> {})
       );
     } else if (CloseableShapeshifter.class.equals(clazz)) {
       return (T) new CursorFactoryRowsAndColumns(as(CursorFactory.class));

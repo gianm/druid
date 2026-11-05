@@ -54,12 +54,16 @@ import org.apache.druid.query.planning.ExecutionVertex;
 import org.apache.druid.query.policy.NoopPolicyEnforcer;
 import org.apache.druid.query.spec.MultipleIntervalSegmentSpec;
 import org.apache.druid.query.spec.QuerySegmentSpec;
+import org.apache.druid.query.spec.SpecificSegmentQueryRunner;
+import org.apache.druid.query.spec.SpecificSegmentSpec;
 import org.apache.druid.query.timeseries.TimeseriesQueryEngine;
 import org.apache.druid.query.timeseries.TimeseriesQueryQueryToolChest;
 import org.apache.druid.query.timeseries.TimeseriesQueryRunnerFactory;
 import org.apache.druid.segment.IncrementalIndexSegment;
 import org.apache.druid.segment.QueryableIndexSegment;
 import org.apache.druid.segment.Segment;
+import org.apache.druid.segment.SegmentMapFunction;
+import org.apache.druid.segment.SplitSegment;
 import org.apache.druid.segment.TestIndex;
 import org.apache.druid.segment.virtual.ExpressionVirtualColumn;
 import org.apache.druid.timeline.SegmentId;
@@ -542,6 +546,53 @@ public class QueryRunnerTestHelper
         ),
         adapter
     );
+  }
+
+  /**
+   * Returns a runner that processes {@code segment} the way segment walkers do: if it is a clustered segment, as one
+   * runner per cluster group (see {@link SplitSegment}), with results merged using {@code factory} and its toolchest.
+   * Queries must have a single interval, which is used as the interval of the segment's descriptor.
+   */
+  public static <T, QueryType extends Query<T>> QueryRunner<T> makeSplittingQueryRunner(
+      final QueryRunnerFactory<T, QueryType> factory,
+      final Segment segment
+  )
+  {
+    return (queryPlus, responseContext) -> {
+      final SegmentDescriptor descriptor =
+          new SegmentDescriptor(Iterables.getOnlyElement(queryPlus.getQuery().getIntervals()), "1", 0);
+
+      // Deliberately not closed: closing the SplitSegment would close the caller's segment.
+      final Segment mappedSegment = SplitSegment.mapFunction(SegmentMapFunction.IDENTITY, null)
+                                                .apply(Optional.of(segment))
+                                                .orElseThrow();
+      final List<Segment> segmentsToProcess = new ArrayList<>();
+      if (mappedSegment instanceof SplitSegment splitSegment) {
+        for (SplitSegment.MappedClusterGroup clusterGroup : splitSegment.getClusterGroups()) {
+          segmentsToProcess.add(clusterGroup.segment());
+        }
+      } else {
+        segmentsToProcess.add(mappedSegment);
+      }
+
+      // Like segment walkers, use the descriptor as the partition key, since every runner reads part of one segment.
+      final List<SinkQueryRunners.PartitionRunner<T>> runners = new ArrayList<>();
+      for (Segment segmentToProcess : segmentsToProcess) {
+        final QueryRunner<T> runner = new SpecificSegmentQueryRunner<>(
+            factory.createRunner(segmentToProcess),
+            new SpecificSegmentSpec(descriptor)
+        );
+        runners.add(new SinkQueryRunners.PartitionRunner<>(descriptor.getInterval(), descriptor, runner));
+      }
+
+      final QueryRunner<T> mergedRunner = factory.getToolchest().mergeResults(
+          factory.mergeRunners(DirectQueryProcessingPool.INSTANCE, SinkQueryRunners.fromPartitionRunners(runners))
+      );
+      return mergedRunner.run(
+          queryPlus.withQuery(Queries.withSpecificSegments(queryPlus.getQuery(), List.of(descriptor))),
+          responseContext
+      );
+    };
   }
 
   public static <T, QueryType extends Query<T>> QueryRunner<T> makeQueryRunnerWithSegmentMapFn(

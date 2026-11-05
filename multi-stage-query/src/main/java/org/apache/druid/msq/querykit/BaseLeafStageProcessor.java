@@ -53,9 +53,13 @@ import org.apache.druid.msq.input.external.ExternalInputSlice;
 import org.apache.druid.msq.input.stage.StageInputSlice;
 import org.apache.druid.msq.kernel.StageDefinition;
 import org.apache.druid.query.Query;
+import org.apache.druid.query.SegmentDescriptor;
 import org.apache.druid.query.filter.SegmentPruner;
 import org.apache.druid.query.planning.ExecutionVertex;
+import org.apache.druid.segment.CursorBuildSpec;
+import org.apache.druid.segment.Segment;
 import org.apache.druid.segment.SegmentMapFunction;
+import org.apache.druid.segment.SegmentViewFetcher;
 import org.apache.druid.segment.loading.AcquireMode;
 import org.apache.druid.utils.CollectionUtils;
 
@@ -284,6 +288,19 @@ public abstract class BaseLeafStageProcessor extends BasicStageProcessor
       ResourceHolder<FrameWriterFactory> frameWriterFactoryHolder,
       FrameContext providerThingy
   );
+
+  /**
+   * Returns the spec that processors from {@link #makeProcessor} build cursors with on the base input segment
+   * {@code segment} of {@code descriptor}, which the input's {@link SegmentMapFunction} has already mapped, or null if
+   * they process it without cursors. {@link BaseLeafFrameProcessorManager} acquires the views of the segment needed for
+   * this spec (see {@link SegmentViewFetcher}), and creates one processor per view. The default returns
+   * {@link CursorBuildSpec#FULL_SCAN}, which needs every row and column of the segment.
+   */
+  @Nullable
+  protected CursorBuildSpec makeCursorBuildSpec(Segment segment, SegmentDescriptor descriptor)
+  {
+    return CursorBuildSpec.FULL_SCAN;
+  }
 
   /**
    * Filters the physical input slices before they are used to create a {@link ReadableInputQueue}.

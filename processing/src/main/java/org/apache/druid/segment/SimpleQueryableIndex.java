@@ -293,8 +293,8 @@ public abstract class SimpleQueryableIndex implements QueryableIndex
   /**
    * Returns a {@link QueryableIndex} sub-view scoped to a single cluster group's column data. Mirrors
    * {@link #getProjectionQueryableIndex(String)} but for cluster groups: addressed by reference to the spec, not by
-   * name. The returned index's columns are the group's per-group columns; clustering columns are NOT present in
-   * the returned index, they're injected at the cursor-factory level via {@code ClusteringColumnSelectorFactory}.
+   * name. The returned index's columns are the group's per-group columns; clustering columns are present as constant
+   * columns only if {@code withClusteringColumns}.
    */
   @Override
   public QueryableIndex getClusterGroupQueryableIndex(TableClusterGroupSpec groupSpec, boolean withClusteringColumns)

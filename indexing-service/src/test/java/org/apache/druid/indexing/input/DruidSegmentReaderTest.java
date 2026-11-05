@@ -30,6 +30,7 @@ import org.apache.druid.data.input.InputEntity.CleanableFile;
 import org.apache.druid.data.input.InputRow;
 import org.apache.druid.data.input.InputStats;
 import org.apache.druid.data.input.MapBasedInputRow;
+import org.apache.druid.data.input.impl.ClusteredValueGroupsBaseTableProjectionSpec;
 import org.apache.druid.data.input.impl.DimensionsSpec;
 import org.apache.druid.data.input.impl.DoubleDimensionSchema;
 import org.apache.druid.data.input.impl.InputStatsImpl;
@@ -48,6 +49,7 @@ import org.apache.druid.java.util.common.parsers.CloseableIterator;
 import org.apache.druid.query.aggregation.AggregatorFactory;
 import org.apache.druid.query.aggregation.CountAggregatorFactory;
 import org.apache.druid.query.aggregation.hyperloglog.HyperUniquesAggregatorFactory;
+import org.apache.druid.query.filter.DimFilter;
 import org.apache.druid.query.filter.NotDimFilter;
 import org.apache.druid.query.filter.OrDimFilter;
 import org.apache.druid.query.filter.SelectorDimFilter;
@@ -907,6 +909,86 @@ public class DruidSegmentReaderTest extends InitializedNullHandlingTest
     Assertions.assertEquals(makeHLLC("bar"), readRows.get(1).getRaw("met_s"));
 
     Assertions.assertEquals(segmentSize, inputStats.getProcessedBytes());
+  }
+
+  @Test
+  public void testReaderClusteredSegment() throws IOException
+  {
+    // Clustered segments are read one cluster group at a time, since a cursor cannot span groups.
+    final ClusteredValueGroupsBaseTableProjectionSpec clusterSpec =
+        ClusteredValueGroupsBaseTableProjectionSpec.builder()
+            .columns(
+                new StringDimensionSchema("tenant"),
+                new StringDimensionSchema("region"),
+                new LongDimensionSchema("__time")
+            )
+            .clusteringColumns("tenant")
+            .build();
+    final File clusteredSegmentDirectory =
+        IndexBuilder.create()
+                    .useV10()
+                    .tmpDir(temporaryFolder.newFolder())
+                    .schema(
+                        IncrementalIndexSchema.builder()
+                                              .withMinTimestamp(DateTimes.of("2000").getMillis())
+                                              .withTimestampSpec(new TimestampSpec("__time", "auto", null))
+                                              .withDimensionsSpec(clusterSpec.getDimensionsSpec())
+                                              .withRollup(false)
+                                              .withClusterSpec(clusterSpec)
+                                              .build()
+                    )
+                    .rows(
+                        ImmutableList.of(
+                            new MapBasedInputRow(
+                                DateTimes.of("2000T02"),
+                                ImmutableList.of("tenant", "region"),
+                                ImmutableMap.of("tenant", "globex", "region", "eu-west-1")
+                            ),
+                            new MapBasedInputRow(
+                                DateTimes.of("2000T00"),
+                                ImmutableList.of("tenant", "region"),
+                                ImmutableMap.of("tenant", "acme", "region", "us-east-1")
+                            ),
+                            new MapBasedInputRow(
+                                DateTimes.of("2000T01"),
+                                ImmutableList.of("tenant", "region"),
+                                ImmutableMap.of("tenant", "acme", "region", "us-west-2")
+                            )
+                        )
+                    )
+                    .buildMMappedIndexFile();
+
+    for (DimFilter filter : Arrays.asList(null, new SelectorDimFilter("tenant", "globex", null))) {
+      final DruidSegmentReader reader = new DruidSegmentReader(
+          makeInputEntity(
+              Intervals.of("2000/P1D"),
+              clusteredSegmentDirectory,
+              ImmutableList.of("tenant", "region"),
+              ImmutableList.of()
+          ),
+          indexIO,
+          new TimestampSpec("__time", "millis", DateTimes.of("1971")),
+          new DimensionsSpec(
+              ImmutableList.of(StringDimensionSchema.create("tenant"), StringDimensionSchema.create("region"))
+          ),
+          ColumnsFilter.all(),
+          filter,
+          temporaryFolder.newFolder()
+      );
+
+      final List<List<Object>> rows = new ArrayList<>();
+      for (InputRow row : readRows(reader)) {
+        rows.add(ImmutableList.of(row.getTimestampFromEpoch(), row.getRaw("tenant"), row.getRaw("region")));
+      }
+
+      final List<List<Object>> expectedRows = new ArrayList<>();
+      if (filter == null) {
+        expectedRows.add(ImmutableList.of(DateTimes.of("2000T00").getMillis(), "acme", "us-east-1"));
+        expectedRows.add(ImmutableList.of(DateTimes.of("2000T01").getMillis(), "acme", "us-west-2"));
+      }
+      expectedRows.add(ImmutableList.of(DateTimes.of("2000T02").getMillis(), "globex", "eu-west-1"));
+      Assertions.assertEquals(expectedRows, rows, "filter: " + filter);
+    }
   }
 
   private InputEntity makeInputEntity(final Interval interval)

@@ -19,6 +19,7 @@
 
 package org.apache.druid.query.filter;
 
+import org.apache.druid.timeline.ClusterGroupTuples;
 import org.apache.druid.timeline.DataSegment;
 
 import javax.annotation.Nullable;
@@ -34,6 +35,15 @@ public interface SegmentPruner
    * during processing.
    */
   boolean include(DataSegment segment);
+
+  /**
+   * Check if rows in any of the given cluster groups of a clustered segment could match. If this method returns false,
+   * the cluster groups can be skipped during processing. Returns true by default.
+   */
+  default boolean includeClusterGroups(ClusterGroupTuples clusterGroups)
+  {
+    return true;
+  }
 
   /**
    * Filter the given {@link Iterable} of objects containing a {@link DataSegment} (obtained from the converter

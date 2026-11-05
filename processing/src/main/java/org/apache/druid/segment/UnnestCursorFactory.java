@@ -103,6 +103,14 @@ public class UnnestCursorFactory implements CursorFactory
   }
 
   /**
+   * Returns the spec that this factory passes to its base cursor factory for {@code spec}.
+   */
+  CursorBuildSpec delegateSpec(CursorBuildSpec spec)
+  {
+    return transformCursorBuildSpec(spec, unnestColumn, computeFilterSplit(spec).getBaseTableFilter());
+  }
+
+  /**
    * Split the spec's filters into base-table and post-unnest filters (see
    * {@link #computeBaseAndPostUnnestFilters}). Cheap and metadata-only; shared by the sync and async holder paths.
    */

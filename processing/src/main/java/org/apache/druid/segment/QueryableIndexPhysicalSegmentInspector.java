@@ -59,7 +59,9 @@ public class QueryableIndexPhysicalSegmentInspector implements PhysicalSegmentIn
     if (columnHolder != null && columnHolder.getCapabilities().hasBitmapIndexes()) {
       ColumnIndexSupplier indexSupplier = columnHolder.getIndexSupplier();
       DictionaryEncodedStringValueIndex index = indexSupplier.as(DictionaryEncodedStringValueIndex.class);
-      return index.getCardinality() > 0 ? index.getValue(0) : null;
+      // Some columns with bitmap indexes have no dictionary index, such as the constant clustering columns of a
+      // cluster group; see ConstantColumns.
+      return index != null && index.getCardinality() > 0 ? index.getValue(0) : null;
     }
     return null;
   }
@@ -75,7 +77,7 @@ public class QueryableIndexPhysicalSegmentInspector implements PhysicalSegmentIn
     if (columnHolder != null && columnHolder.getCapabilities().hasBitmapIndexes()) {
       ColumnIndexSupplier indexSupplier = columnHolder.getIndexSupplier();
       DictionaryEncodedStringValueIndex index = indexSupplier.as(DictionaryEncodedStringValueIndex.class);
-      return index.getCardinality() > 0 ? index.getValue(index.getCardinality() - 1) : null;
+      return index != null && index.getCardinality() > 0 ? index.getValue(index.getCardinality() - 1) : null;
     }
     return null;
   }
